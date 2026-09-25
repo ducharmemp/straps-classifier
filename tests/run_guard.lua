@@ -48,9 +48,13 @@ return function(payload, ctx)
   if _G.TS.mode == "error" then return nil, "HTTP 500" end
   if _G.TS.mode == "timeout" then return nil, "timeout after 8000ms" end
   local questions = require("straps_classifier.questions")
-  local p = _G.TS.mode == "hazard" and 0.97 or 0.01
+  local hazard = _G.TS.mode == "hazard"
   local out = {}
-  for _, id in ipairs(questions.HAZARDS) do out[id] = { type = "noul", noul = p } end
+  for _, q in ipairs(questions.QUESTIONS) do
+    if q.type == "noul" then
+      out[q.id] = { type = "noul", noul = (hazard and q.role == "hazard") and 0.97 or 0.01 }
+    end
+  end
   local legend = {}
   for i, text in ipairs(questions.DAMAGE_LEVELS) do legend[tostring(i - 1)] = text end
   out.damage = { type = "score", score = 0.1, legend = legend, confidence = 0.9 }
@@ -178,6 +182,24 @@ case("a local rule denies with no request at all", function()
   assert(not _G.TS.bash, "the tool must not have run")
   assert(text:find("local rule", 1, true), "a local rule should be named:\n" .. text:sub(-400))
   assert(_G.TS.calls == 0, "a local denial must cost no request")
+end)
+
+case("an over-cap program input is denied without a request", function()
+  _G.TS.calls, _G.TS.mode = 0, "quiet"
+  registry.define({
+    name = "tool.fakebash", kind = "tool", doc = "test", capability = "exec",
+    source = "return function() _G.TS.bash = true; return 'ran' end",
+  }, { scope = "global" })
+  local plugin = require("straps_classifier")
+  local saved = plugin.config.max_state_bytes
+  plugin.config.max_state_bytes = 200
+  _G.TS.bash = false
+  local b = state.new_session()
+  local text = run_one(b, "fakebash", { command = ("echo "):rep(200) })
+  plugin.config.max_state_bytes = saved
+  assert(not _G.TS.bash, "the tool must not have run")
+  assert(text:find("over", 1, true), "the refusal should name the cap:\n" .. text:sub(-400))
+  assert(_G.TS.calls == 0, "an over-cap refusal must cost no request")
 end)
 
 case("every classification is recorded", function()

@@ -11,11 +11,19 @@ M.config = {
   retry = 1,
   deny_threshold = 0.85,
   damage_deny = 2.5,
-  min_confidence = 0.5,
+  opaque_action = "deny",
   always_deny_patterns = {
     "rm%s+%-rf%s+/",
     "%.ssh/id_",
     "%.aws/credentials",
+    "^sudo%s",
+    "%ssudo%s",
+    "^doas%s",
+    "%sdoas%s",
+    "%-%-remote%-",
+    "%-%-server%s",
+    "%$NVIM%f[%W]",
+    "NVIM_LISTEN_ADDRESS",
   },
   max_state_bytes = 4000,
   audit_limit = 500,
@@ -24,6 +32,15 @@ M.config = {
 
 M.installed = false
 M.install_error = nil
+
+-- Frozen at setup(). Every entry reads config through effective(), so a later
+-- assignment to M.config (from eval_lua, say) changes nothing the classifier
+-- does. Before setup() runs there is nothing to freeze and M.config is used.
+local snapshot = nil
+
+function M.effective()
+  return snapshot or M.config
+end
 
 --- Install the guard and the confirm chain. Call this EAGERLY — from
 --- init.lua after require("straps").setup{}, or from
@@ -36,6 +53,7 @@ function M.setup(opts)
     error("straps_classifier: audit_limit must be at least 1 — a classifier that"
       .. " blocks work without saying why is worse than no classifier")
   end
+  snapshot = vim.deepcopy(M.config)
 
   local registry = require("straps.registry")
   local entries = require("straps_classifier.entries")

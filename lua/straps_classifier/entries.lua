@@ -106,7 +106,8 @@ return function(payload, ctx)
     return nil, "no ctx to await on"
   end
   local ok_cfg, plugin = pcall(require, "straps_classifier")
-  local cfg = (ok_cfg and plugin.config) or {}
+  local cfg = (ok_cfg and type(plugin.effective) == "function" and plugin.effective())
+    or (ok_cfg and plugin.config) or {}
   local timeout_ms = tonumber(cfg.timeout_ms) or 8000
   local retries = tonumber(cfg.retry) or 1
   local url = cfg.endpoint or "https://api.typesafe.ai/v1/systemone"
@@ -161,19 +162,19 @@ return function(payload, ctx)
     if not ok_decode or type(decoded) ~= "table" or type(decoded.answers) ~= "table" then
       return nil, "unparseable response"
     end
-    return decoded.answers
+    return decoded.answers, nil, false, decoded.usage
   end
 
-  local answers, err, retryable = attempt()
+  local answers, err, retryable, usage = attempt()
   local tries = 0
   while answers == nil and retryable and tries < retries do
     tries = tries + 1
-    answers, err, retryable = attempt()
+    answers, err, retryable, usage = attempt()
   end
   if answers == nil then
     return nil, err
   end
-  return answers
+  return answers, nil, usage
 end
 ]==],
   }, { scope = "global" })
@@ -215,7 +216,7 @@ end
     source = [==[
 return function(name, input, ctx)
   local plugin = require("straps_classifier")
-  local cfg = plugin.config
+  local cfg = plugin.effective and plugin.effective() or plugin.config
   local questions = require("straps_classifier.questions")
   local policy = require("straps_classifier.policy")
   local local_rules = require("straps_classifier.local_rules")
@@ -250,8 +251,11 @@ return function(name, input, ctx)
     return finish("deny", why, { failure = "local rule" })
   end
 
-  local state = questions.state(name, input, ctx, cfg)
-  local answers, err = registry.call("fn.typesafe", {
+  local state, state_err = questions.state(name, input, ctx, cfg)
+  if not state then
+    return finish("deny", tostring(state_err), { failure = tostring(state_err) })
+  end
+  local answers, err, usage = registry.call("fn.typesafe", {
     state = state,
     model = cfg.model or "jev-latest",
     questions = questions.battery(),
@@ -261,11 +265,8 @@ return function(name, input, ctx)
     return finish("deny", tostring(err), { failure = tostring(err), state = state })
   end
 
-  local action, reason = policy.route(answers, cfg)
-  if action == "deny" then
-    return finish("deny", reason, { answers = answers, state = state })
-  end
-  return finish("ok", reason, { answers = answers })
+  local action, reason = policy.route(answers, cfg, state.capability)
+  return finish(action, reason, { answers = answers, state = state, usage = usage })
 end
 ]==],
   }, { scope = "global" })
@@ -354,7 +355,8 @@ return function(op, name, input, ctx, info)
   -- direct registry.call("tool.*") path, which carries no confirm either.
   if not (ctx and ctx.await) then
     local local_rules = require("straps_classifier.local_rules")
-    local denied, why = local_rules.check(name, input, plugin.config)
+    local denied, why = local_rules.check(name, input,
+      plugin.effective and plugin.effective() or plugin.config)
     local reason = denied and why or "no ctx to await on"
     pcall(registry.try_call, "fn.classifier_audit", bufnr or 0, {
       tool = tostring(name), capability = "unknown", action = "deny",

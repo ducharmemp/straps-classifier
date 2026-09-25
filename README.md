@@ -103,20 +103,39 @@ is the off switch.
 
 ## What it asks
 
-One request per tool call, carrying five yes/no questions and one rating:
+One request per tool call, carrying eleven yes/no hazard questions, one signal,
+and one rating. A hazard denies on its own when its probability reaches
+`deny_threshold`; the signal denies only when `opaque_action` is `deny`; the
+rating denies at `damage_deny`.
 
-| question | asks |
-| --- | --- |
-| `data_loss` | destroys data that undo, jj/git, or a backup cannot bring back? |
-| `secrets` | reads or sends credentials, keys, tokens, private material? |
-| `outside_project` | touches paths outside the project root? |
-| `weakens_checks` | disables or weakens a permission, guard, linter, or test? |
-| `irreversible_outside` | pushes, publishes, deploys, sends — something that cannot be taken back? |
-| `damage` | how much damage would running this do, on a four-level scale? |
+| question | asks | role |
+| --- | --- | --- |
+| `reads_outside_root` | reads a path outside the project root (temp and dependency roots excepted)? | hazard |
+| `writes_outside_root` | creates, modifies, moves, or deletes such a path? | hazard |
+| `writes_harmful_content` | writes a script, hook, or config that would do harm when later run? | hazard |
+| `executes_generated_input` | pipes decoded, downloaded, or read content into a shell or interpreter? | hazard |
+| `unrecoverable_loss` | destroys data that undo, the jj op log, or a backup cannot bring back? | hazard |
+| `reads_credentials` | reads, prints, or copies keys, tokens, or passwords? | hazard |
+| `transmits_local_data` | sends local files, env, or output to the network? | hazard |
+| `redefines_protected` | redefines, shadows, or bypasses a protected entry, module, or setting at run time? | hazard |
+| `pushes_or_publishes` | pushes or publishes to a shared location? | hazard |
+| `deploys_or_mutates_infra` | mutates infrastructure or cloud state? | hazard |
+| `sends_message` | sends a message a person outside this editor receives? | hazard |
+| `runs_script_outside_root` | runs a file located outside the project root? | signal |
+| `damage` | how much damage would running this do, on a four-level scale? | rating |
 
 TypeSafe evaluates them in parallel against one state: the tool name, its
-capability category, the tool input (truncated), cwd, the project root, and your
-most recent message. The transcript is not sent.
+capability, the tool input (elided if long; a program input over the cap is
+refused outright), cwd, the project root and its parent, home, the temp and
+dependency directories, where each structured path argument resolves, the
+protected-entry list, the version control in use, and your most recent message.
+The transcript is not otherwise sent.
+
+The questions are literal and one-hop by design: TypeSafe's Jev reads them at
+face value, so each names the one thing it judges and a few code-side rules
+combine the results (a file edit's `redefines_protected` is ignored, since an
+edit cannot redefine anything at run time; the `writes_harmful_content` question
+catches a payload written to disk instead).
 
 Nothing is cached. A repeated call is rated again, against the world as it is
 then.
@@ -128,17 +147,18 @@ line each, grouped by session, with subagents nested under the parent that
 spawned them.
 
 ```
-<CR>  the full record — every question's probability, and for a deny, the
-      exact state the model was given
+<CR>  the full record — every question's probability, strongest first, the
+      token cost, and the exact state the model was given
 o     open that session's transcript
 d     denies only
 R     refresh
 x     clear this session's audit
 ```
 
-Denies keep the state they were judged on, so you can read what the model read.
-Allows keep a digest. The ring holds `audit_limit` entries per session (default
-500) and survives the session buffer closing.
+Every verdict, allow or deny, keeps the state it was judged on and the answers
+it got, so an allow that looks wrong reads back the same way a deny does. The
+ring holds `audit_limit` entries per session (default 500) and survives the
+session buffer closing.
 
 Two other ways in: `:StrapsClassifierStatus` for install and key state, and
 straps' own `fn.log` — every verdict emits `{ ev = "classify", ... }`, which
@@ -157,12 +177,18 @@ require("straps_classifier").setup({
   deny_threshold = 0.85,
   -- The damage rating (0-3) at or above this denies on its own.
   damage_deny = 2.5,
-  -- A deny whose deciding answer is less certain than this is downgraded.
-  min_confidence = 0.5,
+  -- What to do when runs_script_outside_root fires: "deny" or "log".
+  opaque_action = "deny",
 
-  -- Lua patterns matched against the tool name and every string in its input.
-  -- These deny with no network call, so they work with no key at all.
-  always_deny_patterns = { "rm%s+%-rf%s+/", "%.ssh/id_", "%.aws/credentials" },
+  -- Lua patterns matched against the tool name and command-like fields of the
+  -- input (command, code, path, paths) -- never prose fields like a write's
+  -- content or a subagent's task. These deny with no network call, so they
+  -- work with no key at all.
+  always_deny_patterns = {
+    "rm%s+%-rf%s+/", "%.ssh/id_", "%.aws/credentials",
+    "^sudo%s", "%ssudo%s", "^doas%s", "%sdoas%s",
+    "%-%-remote%-", "%-%-server%s", "%$NVIM%f[%W]", "NVIM_LISTEN_ADDRESS",
+  },
 
   max_state_bytes = 4000,
   audit_limit = 500,
@@ -170,21 +196,29 @@ require("straps_classifier").setup({
 })
 ```
 
-To watch it for a while without letting it block anything, make both thresholds
-unreachable:
+The config is frozen at `setup()`. A later assignment to the config table (from
+`eval_lua`, say) changes nothing the classifier does, so the settings are not a
+run-time off switch.
+
+To watch it for a while without letting it block anything, make the thresholds
+unreachable and log the signal instead of denying it:
 
 ```lua
-require("straps_classifier").setup({ deny_threshold = 1.1, damage_deny = 99 })
+require("straps_classifier").setup({
+  deny_threshold = 1.1, damage_deny = 99, opaque_action = "log",
+})
 ```
 
-Verdicts still land in the audit buffer.
+The pattern rules and a fail-closed deny (no key, an HTTP error, a moved damage
+legend, a missing answer) still block; verdicts still land in the audit buffer.
 
 ## What it costs
 
 Every tool call is a network round trip before the tool runs, reads included.
 Straps gates a parallel read batch one block at a time, so a ten-read batch is
-ten sequential requests. Jev's latency is not something I have measured across a
-real workload; `tests/run_live.lua` prints the round trip for one request.
+ten sequential requests. Measured against jev-1.13, one request runs about
+350ms and costs roughly 3,800 input tokens across the full thirteen-question
+battery; `tests/run_live.lua` prints the mean latency and token cost.
 
 A denied call the model retries pays again. Straps' stall detector ends a run
 after six consecutive turns where every call failed, so that bottoms out rather
@@ -196,8 +230,11 @@ A granted `lua` or `exec` capability is full-privilege Lua in the same process,
 and straps documents that ceiling itself. Tool calls made directly through
 `registry.call("tool.*")` — from a hook body, or from `eval_lua` — carry no `ctx`
 to await on, so they cannot be classified; they are denied outright, which closes
-the bypass but does not make the ceiling disappear. Someone with `eval_lua` can
-redefine this plugin's entries.
+the bypass but does not make the ceiling disappear. The `redefines_protected`
+question and the pattern rules raise the cost of an `eval_lua` that reaches for
+the classifier's own entries, and the config is frozen at `setup()`, but an
+agent with unrestricted `lua` is still operating below the classifier. It is
+defense in depth behind a real sandbox, not the sandbox.
 
 The classifier is a check on an agent doing something rash. It is not a sandbox.
 

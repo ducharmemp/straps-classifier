@@ -24,7 +24,10 @@ local filter_denies = false
 
 local function cfg()
   local ok, plugin = pcall(require, "straps_classifier")
-  return (ok and type(plugin) == "table" and plugin.config) or {}
+  if not (ok and type(plugin) == "table") then
+    return {}
+  end
+  return (plugin.effective and plugin.effective()) or plugin.config or {}
 end
 
 local function session_meta(bufnr)
@@ -48,9 +51,9 @@ local function session_meta(bufnr)
   return label, path, parent, depth
 end
 
---- Record one classification. `rec` carries everything the plan lists; the
---- caller decides what to include (a deny keeps the state it was judged on,
---- an allow keeps only the digest).
+--- Record one classification. `rec` carries everything the plan lists; every
+--- verdict keeps the state it was judged on and the answers it got, so an
+--- allow that looks wrong can be read back the same way a deny can.
 function M.record(bufnr, rec)
   local limit = tonumber(cfg().audit_limit) or 500
   if limit < 1 then
@@ -173,6 +176,50 @@ local function fit(text, width)
   return vim.fn.strcharpart(text, 0, n) .. "…"
 end
 
+-- A noul is its probability; a score is its position on the legend scale; an
+-- answer with neither sorts last. Keyed on field presence, not `type`, so
+-- hand-built records without a type still render.
+local function strength(a)
+  if type(a) ~= "table" then
+    return -1
+  end
+  if type(a.noul) == "number" then
+    return a.noul
+  end
+  if type(a.score) == "number" then
+    local levels = #require("straps_classifier.questions").DAMAGE_LEVELS
+    return levels > 1 and a.score / (levels - 1) or a.score
+  end
+  return -1
+end
+
+--- One line per answer, strongest first, for the record view.
+function M.answer_lines(answers)
+  local ids = {}
+  for id in pairs(answers) do
+    ids[#ids + 1] = id
+  end
+  table.sort(ids, function(x, y)
+    local sx, sy = strength(answers[x]), strength(answers[y])
+    if sx ~= sy then
+      return sx > sy
+    end
+    return x < y
+  end)
+  local out = {}
+  for _, id in ipairs(ids) do
+    local a = answers[id]
+    if type(a) == "table" and type(a.noul) == "number" then
+      out[#out + 1] = ("%-28s %.2f"):format(id, a.noul)
+    elseif type(a) == "table" and type(a.score) == "number" then
+      out[#out + 1] = ("%-28s %.2f  (score%s)"):format(id, a.score,
+        type(a.confidence) == "number" and (", confidence %.2f"):format(a.confidence) or "")
+    else
+      out[#out + 1] = ("%-28s %s"):format(id, vim.inspect(a):gsub("%s+", " "))
+    end
+  end
+  return out
+end
 --- Implementation of fn.classifier_audit_render.
 function M.render(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
@@ -211,7 +258,7 @@ function M.render(bufnr)
         if not filter_denies or e.action == "deny" then
           local mark = e.action == "deny" and "DENY" or " ok "
           local row = ("  %s  %s  %-16s %s"):format(
-            os.date("%H:%M:%S", e.at), mark, fit(e.tool, 16), fit(e.reason or "", 28))
+            os.date("%H:%M:%S", e.at), mark, fit(e.tool, 16), fit(e.reason or "", 41))
           lines[#lines + 1] = row
           hls[#hls + 1] = { #lines - 1, 12, 18,
             e.action == "deny" and "DiagnosticError" or "DiagnosticOk" }
@@ -311,10 +358,13 @@ local function open_record()
   end
   if e.answers then
     out[#out + 1] = ""
-    out[#out + 1] = "answers:"
-    for _, l in ipairs(vim.split(vim.inspect(e.answers), "\n", { plain = true })) do
+    out[#out + 1] = "answers (strongest first):"
+    for _, l in ipairs(M.answer_lines(e.answers)) do
       out[#out + 1] = "  " .. l
     end
+  end
+  if e.usage and e.usage.input_tokens then
+    out[#out + 1] = "tokens:    " .. tostring(e.usage.input_tokens)
   end
   if e.state then
     out[#out + 1] = ""

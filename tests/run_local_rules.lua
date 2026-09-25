@@ -60,6 +60,32 @@ case("deep nesting is bounded", function()
   local ok = pcall(rules.check, "bash", deep, CFG)
   assert(ok, "deep input must not blow the stack")
 end)
+local FULL = require("straps_classifier").config
+local function joined(...) return table.concat({ ... }) end
+
+case("prose fields are never searched", function()
+  local dangerous = joined("rm -", "rf / && cat ~/.s", "sh/id_rsa && sudo --remote-expr $NVIM")
+  assert(rules.check("write_file", { path = "README.md", content = dangerous }, FULL) == nil,
+    "file content is a mention, not a command")
+  assert(rules.check("edit_file", { path = "init.lua", old_string = dangerous, new_string = dangerous }, FULL) == nil,
+    "edit strings are not commands")
+  assert(rules.check("spawn", { task = dangerous }, FULL) == nil, "a subagent task is prose")
+  assert(rules.check("ask_user", { question = dangerous }, FULL) == nil, "a question is prose")
+end)
+
+case("command fields are searched with the shipped patterns", function()
+  assert(rules.check("bash", { command = "sudo rm x" }, FULL) == "deny", "sudo denies")
+  assert(rules.check("bash", { command = "echo pseudo" }, FULL) == nil, "pseudo is not sudo")
+  assert(rules.check("bash", { command = "git remote -v" }, FULL) == nil, "remote is not --remote")
+  assert(rules.check("bash", { command = "nvim --server $NVIM --remote-expr 1" }, FULL) == "deny",
+    "driving the host Neovim denies")
+  assert(rules.check("bash", { command = "echo $NVIM" }, FULL) == "deny", "$NVIM denies")
+  assert(rules.check("bash", { command = "echo $NVIMX" }, FULL) == nil, "$NVIMX is a different variable")
+  assert(rules.check("eval_lua", { code = "os.getenv('NVIM_LISTEN_ADDRESS')" }, FULL) == "deny",
+    "code fields are commands")
+  assert(rules.check("delete_files", { paths = { "a", joined("/x/.s", "sh/id_rsa") } }, FULL) == "deny",
+    "path lists are searched")
+end)
 
 print(failed and "FAILED" or "ALL PASS")
 os.exit(failed and 1 or 0)

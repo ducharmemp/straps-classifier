@@ -50,16 +50,37 @@ case("a record lands in the ring", function()
   assert(all[1].entries[1].seq == 1, "entries are sequenced")
 end)
 
-case("a deny keeps the state it was judged on; an allow does not", function()
+case("every verdict keeps the state it was judged on", function()
   audit.clear()
+  registry.define({
+    name = "fn.typesafe", kind = "fn", doc = "test stub: quiet battery",
+    source = [[
+return function(payload, ctx)
+  if not (ctx and ctx.await) then return nil, "no ctx to await on" end
+  local questions = require("straps_classifier.questions")
+  local out = {}
+  for _, q in ipairs(questions.QUESTIONS) do
+    if q.type == "noul" then out[q.id] = { type = "noul", noul = 0.01 } end
+  end
+  local legend = {}
+  for i, text in ipairs(questions.DAMAGE_LEVELS) do legend[tostring(i - 1)] = text end
+  out.damage = { type = "score", score = 0.1, legend = legend, confidence = 0.9 }
+  return out, nil, { input_tokens = 123 }
+end
+]],
+  }, { scope = "global" })
   local b = fresh_session()
-  audit.record(b, { tool = "bash", action = "deny", reason = "data_loss=0.9",
-    state = { tool = "bash" }, answers = { data_loss = { noul = 0.9 } } })
-  audit.record(b, { tool = "ping", action = "ok", reason = "quiet" })
-  local entries = audit.all()[1].entries
-  local deny, allow = entries[1], entries[2]
-  assert(deny.state ~= nil, "a deny should keep the state sent")
-  assert(allow.state == nil, "an allow should not carry state")
+  local ctx = { bufnr = b, await = function(_) return nil end }
+  local action = registry.call("fn.risk_verdict", "ping", { x = 1 }, ctx)
+  assert(action == "ok", "the quiet battery should allow")
+  local rec = audit.all()[1].entries[1]
+  assert(rec.state ~= nil and rec.state.tool == "ping", "an allow keeps the state sent")
+  assert(rec.answers ~= nil, "an allow keeps its answers")
+  assert(rec.usage and rec.usage.input_tokens == 123, "token usage is recorded")
+  local lines = audit.answer_lines({ a = { noul = 0.2 }, b = { noul = 0.9 }, damage = { score = 1.5 }, odd = {} })
+  assert(lines[1]:find("^b"), "strongest noul first: " .. lines[1])
+  assert(lines[2]:find("^damage"), "score sorted by legend position: " .. lines[2])
+  assert(lines[#lines]:find("^odd"), "shapeless answers sort last")
 end)
 
 case("the ring caps at audit_limit and drops the oldest", function()

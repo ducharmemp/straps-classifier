@@ -4,9 +4,20 @@
 
 local M = {}
 
--- Every string value anywhere in the tool input, plus the tool name. A deny
--- pattern should match a dangerous command whether it arrived as `command`,
--- `path`, or an element of `paths`.
+-- Fields that hold prose or file content. A pattern in a README paragraph, a
+-- test fixture, or a subagent's task text is a mention, not a command, so
+-- these fields are never searched. Sourced from questions.PROSE_KEYS so the
+-- rules and the state renderer agree on what counts as prose. `pattern` and
+-- `input_schema` are added here (a grep pattern or a JSON schema is not a
+-- command); `replacement` is deliberately NOT prose (a :s replacement runs
+-- code via \=).
+local PROSE_KEYS = vim.tbl_extend("force",
+  require("straps_classifier.questions").PROSE_KEYS,
+  { pattern = true, input_schema = true })
+
+-- Every string value anywhere in the tool input except prose fields, plus the
+-- tool name. A deny pattern should match a dangerous command whether it arrived
+-- as `command`, `code`, `path`, or an element of `paths`.
 local function strings_in(value, out, depth)
   depth = depth or 0
   if depth > 6 then
@@ -15,15 +26,18 @@ local function strings_in(value, out, depth)
   if type(value) == "string" then
     out[#out + 1] = value
   elseif type(value) == "table" then
-    for _, v in pairs(value) do
-      strings_in(v, out, depth + 1)
+    for k, v in pairs(value) do
+      if not (type(k) == "string" and PROSE_KEYS[k]) then
+        strings_in(v, out, depth + 1)
+      end
     end
   end
   return out
 end
 
 --- check(name, input, cfg) -> "deny", reason | nil
---- Lua patterns, matched case-sensitively against each string in the input.
+--- Lua patterns, matched case-sensitively against each command-like string in
+--- the input.
 function M.check(name, input, cfg)
   local patterns = cfg.always_deny_patterns
   if type(patterns) ~= "table" or #patterns == 0 then
