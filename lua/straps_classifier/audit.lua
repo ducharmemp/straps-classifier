@@ -344,6 +344,7 @@ local function open_record()
     "session:   " .. tostring(s.label),
     "tool:      " .. tostring(e.tool),
     "category:  " .. tostring(e.capability),
+    "battery:   " .. tostring(e.kind or "hazard"),
     "action:    " .. tostring(e.action),
     "reason:    " .. tostring(e.reason),
     "latency:   " .. (e.ms and (e.ms .. "ms") or "n/a"),

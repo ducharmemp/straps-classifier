@@ -140,6 +140,103 @@ catches a payload written to disk instead).
 Nothing is cached. A repeated call is rated again, against the world as it is
 then.
 
+"Your most recent message" skips blocks the harness appends (`[straps] ...`
+notices about other agents or finished subagents), so the request Jev sees is
+the last thing you typed.
+
+### `ask_user` questions
+
+When the agent calls the builtin `ask_user`, the request carries a different
+battery with no damage rating. Every deny reason says what to change; all
+except the do-not-ask reasons end "Ask again with the reworked question."
+
+Eight fixed yes/no questions each deny on their own. Each has its own cutoff,
+which defaults to `ask_deny_threshold` (falling back to `deny_threshold`):
+
+> question needs rework (vague_option=0.97 >= 0.85): Replace each vague option
+> with a concrete action, or drop it; the picker already offers free text. Ask
+> again with the reworked question.
+
+| question | asks |
+| --- | --- |
+| `vague_option` | offers an option with no concrete action? |
+| `distinction_without_difference` | offers options that lead to the same result? |
+| `permission_seeking` | asks whether to do work the request already asked for? |
+| `already_answered` | asks something the request already decides? |
+| `loaded_premise` | takes as given a claim the request does not establish? |
+| `fabricated_cost` | argues an option on an effort or time estimate? |
+| `package_deal` | bundles independent decisions into one option? |
+| `appeal_to_authority_or_popularity` | argues an option from popularity, authority, tradition, or novelty? Matching this project's own convention does not count. |
+
+`permission_seeking` and `already_answered` are checked first and deny as
+`do not ask (<id>=0.xx >= 0.85): Do not ask; ...`, because "do not ask"
+outranks any rework of the options.
+
+The battery also carries signals. None denies alone; code combines them into
+three verdicts. Two signals are always sent; the rest are built per call when
+there are two or more options:
+
+| signal | asks |
+| --- | --- |
+| `marked_recommended` | is an option explicitly marked recommended? |
+| `states_deciding_factor` | does the question say why that option beats the others for this request? An effort estimate or a listed pro is not such a reason. |
+| `viable_1` .. `viable_n` | is the approach option *n* names one a reasonable engineer could choose for this request, ignoring how the option describes its own costs? |
+| `disfavored_1` .. `disfavored_n` | is option *n* described so as to lose: only drawbacks, extra steps, or costs, and no benefit? |
+| `steer` (choice) | which option the framing pushes toward, or `none` |
+| `asymmetric_detail` | is the favoured option described in its strong form while another is charged with drawbacks, steps, or costs it is not, or given no benefit? |
+| `decoy_present` | is an option dominated on every dimension and there to flatter another? |
+| `fairness` (score 0-4) | even-handed, mild lean, loaded, rigged, rigged with a decoy |
+
+The verdicts, in the order checked after the do-not-ask pair:
+
+- **Hobson's choice**, a defect in the option set: two or more options, and at
+  most one `viable_n` at or above 0.6. The reason names the one real option and
+  each non-option with its score, and tells the agent to propose two or more
+  genuinely different approaches, or present the real option as a single
+  recommendation, or describe a badly described real approach as a competent
+  engineer would build it.
+- **Stacked deck**, a defect in the presentation: `steer` picks an option with
+  confidence at or above 0.6, and `asymmetric_detail` or `decoy_present` is at
+  or above 0.7, or `fairness` is at or above 2.0. A strawmanned alternative is
+  a stacked deck: it is charged with steps and costs the favourite is not. The
+  reason names the favoured option and every option with `disfavored_n` at or
+  above 0.6, and tells the agent to give those options their benefits, drop
+  steps or costs the approach does not need, give every option comparable
+  detail, remove decoys, and keep a recommendation only with its deciding
+  factor.
+- **Unsupported recommendation**, for any option count: `marked_recommended` at
+  or above 0.7 and `states_deciding_factor` under 0.5. The reason tells the
+  agent to state the deciding factor or remove the mark.
+
+After the verdicts, the fixed hazard furthest over its own cutoff denies.
+
+Steering alone never denies: an honest recommendation that lists each option's
+pros and cons and states its deciding factor passes. The cutoffs are starting
+values from sixteen fixtures, not calibrated against a hand-labelled sample.
+Jev judges the shape of the presentation; it cannot check whether an option's
+claims are true, whether an omitted drawback exists, or whether a realistic
+alternative is missing from the option set.
+
+The state for this battery is the tool name, capability, the whole input
+(never elided; over `ask_state_bytes` it is refused), the options numbered from
+1, and the tail of your most recent message up to 2000 bytes (the parent's task
+in a subagent). Jev must judge what the user will see, so an
+input the picker would not show whole is denied with no request: a field the
+builtin does not read (anything but `question`, `options`, `content`,
+`filetype`; option fields other than `label`, `preview`, `filetype`), a
+non-list `options`, an empty or non-string question, label, or string option, a
+non-string `content` or `preview`, any of those over 200 lines, a label or
+string option spanning more than one line, more than nine options, or a
+filetype that is not a filetype name.
+
+Only the builtin gets this battery. `setup()` records the global `tool.ask_user`
+it finds at version 1; a session shadow, a redefinition, or any other source
+gets the full command battery. If straps' editor layer is off, or the classifier
+is set up before straps, no builtin is recorded and every `ask_user` call gets
+the command battery. The entry recorded is whatever global version-1
+`tool.ask_user` exists when `setup()` runs, so code that replaces it before
+then is trusted.
+
 ## Inspecting verdicts
 
 `:StrapsClassifierAudit` opens `straps://classifier`: every classification, one
@@ -179,6 +276,20 @@ require("straps_classifier").setup({
   damage_deny = 2.5,
   -- What to do when runs_script_outside_root fires: "deny" or "log".
   opaque_action = "deny",
+  -- Any fixed ask_user question at or above this denies. Unset: deny_threshold.
+  ask_deny_threshold = nil,
+  -- Override any ask cutoff by name. Unset keys keep these defaults; a fixed
+  -- question's key defaults to ask_deny_threshold. A value above 1 disables
+  -- that question or verdict (fairness is a 0-4 score: above 4 disables it).
+  ask_cutoffs = {
+    viable = 0.6, disfavored = 0.6, steer_confidence = 0.6,
+    asymmetric_detail = 0.7, decoy_present = 0.7, fairness = 2.0,
+    marked_recommended = 0.7, deciding_factor = 0.5,
+    vague_option = nil, distinction_without_difference = nil,
+    permission_seeking = nil, already_answered = nil, loaded_premise = nil,
+    fabricated_cost = nil, package_deal = nil,
+    appeal_to_authority_or_popularity = nil,
+  },
 
   -- Lua patterns matched against the tool name and command-like fields of the
   -- input (command, code, path, paths) -- never prose fields like a write's
@@ -191,6 +302,8 @@ require("straps_classifier").setup({
   },
 
   max_state_bytes = 4000,
+  -- ask_user input is never elided; over this it is refused.
+  ask_state_bytes = 16000,
   audit_limit = 500,
   on_verdict = nil,  -- function(record), called off the tool path
 })
@@ -209,8 +322,11 @@ require("straps_classifier").setup({
 })
 ```
 
-The pattern rules and a fail-closed deny (no key, an HTTP error, a moved damage
-legend, a missing answer) still block; verdicts still land in the audit buffer.
+`ask_deny_threshold` falls back to `deny_threshold`, so the same settings stop
+`ask_user` denies too, the code verdicts included, unless you set it or a
+per-question key in `ask_cutoffs`. The pattern rules, the `ask_user` field
+check, and a fail-closed deny (no key, an HTTP error, a moved damage legend, a
+missing answer) still block; verdicts still land in the audit buffer.
 
 ## What it costs
 
@@ -218,7 +334,10 @@ Every tool call is a network round trip before the tool runs, reads included.
 Straps gates a parallel read batch one block at a time, so a ten-read batch is
 ten sequential requests. Measured against jev-1.13, one request runs about
 350ms and costs roughly 3,800 input tokens across the full thirteen-question
-battery; `tests/run_live.lua` prints the mean latency and token cost.
+battery; `tests/run_live.lua` prints the mean latency and token cost per
+battery. The `ask_user` battery measured about 300ms and 5,270 input tokens per
+request over the sixteen `ask` fixtures, most with three options (jev-latest,
+2026-09-28); with no options it is about 3,100 tokens.
 
 A denied call the model retries pays again. Straps' stall detector ends a run
 after six consecutive turns where every call failed, so that bottoms out rather
@@ -246,7 +365,8 @@ nvim --headless -l tests/run_local_rules.lua  # pattern rules
 nvim --headless -l tests/run_guard.lua        # the guard
 nvim --headless -l tests/run_confirm.lua      # the confirm chain
 nvim --headless -l tests/run_audit.lua        # the record and its view
-nvim --headless -l tests/run_live.lua         # one real request (needs a key)
+nvim --headless -l tests/run_live.lua         # the fixture matrix (needs a key)
+nvim --headless -l tests/run_live.lua ask     # only the ask_user fixtures
 ```
 
 Everything but `run_live.lua` runs offline against a scripted backend. Tests that

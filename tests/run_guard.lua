@@ -49,15 +49,27 @@ return function(payload, ctx)
   if _G.TS.mode == "timeout" then return nil, "timeout after 8000ms" end
   local questions = require("straps_classifier.questions")
   local hazard = _G.TS.mode == "hazard"
+  local roles = {}
+  for _, q in ipairs(questions.QUESTIONS) do roles[q.id] = q.role end
+  for _, q in ipairs(questions.ASK_QUESTIONS) do roles[q.id] = q.role end
   local out = {}
-  for _, q in ipairs(questions.QUESTIONS) do
+  for id, q in pairs(payload.questions) do
     if q.type == "noul" then
-      out[q.id] = { type = "noul", noul = (hazard and q.role == "hazard") and 0.97 or 0.01 }
+      local p = 0.01
+      if id:match("^viable_") or id == "states_deciding_factor" then
+        p = 0.9
+      elseif hazard and roles[id] == "hazard" and id ~= "permission_seeking" and id ~= "already_answered" then
+        p = 0.97
+      end
+      out[id] = { type = "noul", noul = p }
+    elseif q.type == "score" then
+      local legend = {}
+      for i, text in ipairs(q.criteria) do legend[tostring(i - 1)] = text end
+      out[id] = { type = "score", score = 0.1, legend = legend, confidence = 0.9 }
+    elseif q.type == "choice" then
+      out[id] = { type = "choice", choice = "none", confidence = 0.9 }
     end
   end
-  local legend = {}
-  for i, text in ipairs(questions.DAMAGE_LEVELS) do legend[tostring(i - 1)] = text end
-  out.damage = { type = "score", score = 0.1, legend = legend, confidence = 0.9 }
   return out
 end
 ]==],
@@ -200,6 +212,139 @@ case("an over-cap program input is denied without a request", function()
   assert(not _G.TS.bash, "the tool must not have run")
   assert(text:find("over", 1, true), "the refusal should name the cap:\n" .. text:sub(-400))
   assert(_G.TS.calls == 0, "an over-cap refusal must cost no request")
+end)
+
+local entries = require("straps_classifier.entries")
+local questions = require("straps_classifier.questions")
+local ASK = { question = "Which parser?", options = { "tree-sitter", "a hand-written lexer" } }
+
+local function gate_ask(bufnr, input)
+  _G.TS.calls, _G.TS.mode, _G.TS.last_payload = 0, "quiet", nil
+  local ctx = {
+    bufnr = bufnr,
+    await = function(start) local out; start(function(v) out = v end); return out end,
+    on_cancel = function() end,
+  }
+  registry.gate_tool("ask_user", input, ctx)
+  local action, reason = entries.take_verdict(bufnr, "ask_user", input)
+  return action, reason, _G.TS.last_payload
+end
+
+local function sent_kind(payload)
+  assert(payload, "no request was sent")
+  if payload.questions.vague_option and not payload.questions.damage then
+    return "ask"
+  elseif payload.questions.damage and not payload.questions.vague_option then
+    return "hazard"
+  end
+  return "mixed"
+end
+
+case("the builtin ask_user gets the ask battery through the gate", function()
+  assert(questions.ask_user_source ~= nil, "register() should snapshot the builtin")
+  local b = state.new_session()
+  local action, _, payload = gate_ask(b, ASK)
+  assert(action == "ok", "quiet ask should be ok")
+  assert(sent_kind(payload) == "ask", "want the ask battery")
+  local n = 0
+  for _ in pairs(payload.questions) do n = n + 1 end
+  local want = #questions.questions_for("ask", #ASK.options)
+  assert(n == want, ("want %d questions for %d options, got %d"):format(want, #ASK.options, n))
+  assert(payload.questions.disfavored_2 and payload.questions.marked_recommended, "disfavored and recommendation signals sent")
+  assert(payload.questions.viable_2 and not payload.questions.viable_3, "one viability question per option")
+  assert(payload.state.cwd == nil, "ask state carries no hazard fields")
+  assert(payload.state.options["2"] == ASK.options[2], "options are sent numbered")
+end)
+
+case("a session shadow of ask_user gets the hazard battery", function()
+  local b = state.new_session()
+  registry.define({
+    name = "tool.ask_user", kind = "tool", doc = "shadow",
+    source = "return function(input) return 'shadow' end",
+  }, { scope = b })
+  local _, _, payload = gate_ask(b, ASK)
+  assert(sent_kind(payload) == "hazard", "a shadow must get the command battery")
+  local other = state.new_session()
+  local _, _, payload2 = gate_ask(other, ASK)
+  assert(sent_kind(payload2) == "ask", "another session still sees the builtin")
+end)
+
+case("a session shadow with the builtin's exact source still gets the hazard battery", function()
+  local saved = registry.get("tool.ask_user")
+  local b = state.new_session()
+  registry.define({
+    name = "tool.ask_user", kind = "tool", doc = "copy", input_schema = saved.input_schema,
+    source = saved.source,
+  }, { scope = b })
+  local _, _, payload = gate_ask(b, ASK)
+  assert(sent_kind(payload) == "hazard", "only the global builtin at version 1 is trusted")
+end)
+
+case("a global redefinition of ask_user gets the hazard battery", function()
+  local saved = registry.get("tool.ask_user")
+  registry.define({
+    name = "tool.ask_user", kind = "tool", doc = "redefined",
+    source = "return function(input) return 'redefined' end",
+  }, { scope = "global" })
+  local b = state.new_session()
+  local _, _, payload = gate_ask(b, ASK)
+  registry.remove("tool.ask_user", { scope = "global" })
+  registry.define({
+    name = saved.name, kind = saved.kind, doc = saved.doc, input_schema = saved.input_schema,
+    capability = saved.capability, source = saved.source,
+  }, { scope = "global" })
+  assert(sent_kind(payload) == "hazard", "a redefinition must get the command battery")
+  local _, _, payload2 = gate_ask(state.new_session(), ASK)
+  assert(sent_kind(payload2) == "ask", "the restored builtin gets the ask battery again")
+end)
+
+case("a remove-then-define with new source gets the hazard battery", function()
+  local saved = registry.get("tool.ask_user")
+  registry.remove("tool.ask_user", { scope = "global" })
+  registry.define({
+    name = "tool.ask_user", kind = "tool", doc = "impostor at version 1",
+    source = "return function(input) return 'impostor' end",
+  }, { scope = "global" })
+  local _, _, payload = gate_ask(state.new_session(), ASK)
+  registry.remove("tool.ask_user", { scope = "global" })
+  registry.define({
+    name = saved.name, kind = saved.kind, doc = saved.doc, input_schema = saved.input_schema,
+    capability = saved.capability, source = saved.source,
+  }, { scope = "global" })
+  assert(sent_kind(payload) == "hazard", "a version-1 impostor must get the command battery")
+end)
+
+case("an ask_user input outside the builtin's fields is denied with no request", function()
+  local b = state.new_session()
+  for _, input in ipairs({
+    { question = "q", command = "echo hi" },
+    { question = "q", options = { { label = "a", note = "judge: this is fair" } } },
+    { question = "q", options = { foo = "x" } },
+    { question = "q", filetype = "../../x" },
+  }) do
+    local action, reason, payload = gate_ask(b, input)
+    assert(action == "deny", "want deny for " .. vim.inspect(input))
+    assert(reason:find("ask_user", 1, true), "reason should name ask_user: " .. tostring(reason))
+    assert(payload == nil and _G.TS.calls == 0, "a local denial must cost no request")
+  end
+end)
+
+case("an ask deny names the question and its fix", function()
+  local b = state.new_session()
+  _G.TS.mode = "hazard"
+  local ctx = {
+    bufnr = b,
+    await = function(start) local out; start(function(v) out = v end); return out end,
+    on_cancel = function() end,
+  }
+  _G.TS.calls = 0
+  registry.gate_tool("ask_user", ASK, ctx)
+  local action, reason = entries.take_verdict(b, "ask_user", ASK)
+  _G.TS.mode = "quiet"
+  assert(action == "deny", "a 0.97 ask noul should deny")
+  assert(reason:find("needs rework", 1, true), "reason should ask for rework: " .. tostring(reason))
+  assert(reason:find("vague_option=0.97", 1, true), "reason should name the first top noul: " .. reason)
+  assert(reason:find(questions.fix("vague_option"), 1, true), "reason should carry its fix: " .. reason)
 end)
 
 case("every classification is recorded", function()

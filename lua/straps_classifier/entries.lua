@@ -47,6 +47,7 @@ end
 
 function M.register()
   local registry = require("straps.registry")
+  require("straps_classifier.questions").snapshot_ask_user()
 
   -- ── fn.typesafe_api_key ───────────────────────────────────────────────────
   registry.define({
@@ -224,10 +225,12 @@ return function(name, input, ctx)
 
   local bufnr = ctx and ctx.bufnr or nil
   local started = vim.uv.hrtime()
+  local kind = questions.battery_kind(name)
 
   local function finish(action, reason, extra)
     local rec = vim.tbl_extend("force", {
       tool = tostring(name),
+      kind = kind,
       capability = (registry.try_call("fn.capability", name, input)) or "unknown",
       action = action,
       reason = reason,
@@ -236,7 +239,7 @@ return function(name, input, ctx)
     }, extra or {})
     pcall(registry.try_call, "fn.classifier_audit", bufnr or 0, rec)
     pcall(registry.try_call, "fn.log", {
-      ev = "classify", session = bufnr, tool = rec.tool, cap = rec.capability,
+      ev = "classify", session = bufnr, tool = rec.tool, kind = kind, cap = rec.capability,
       action = action, reason = reason, ms = rec.ms,
     })
     if type(cfg.on_verdict) == "function" then
@@ -251,21 +254,29 @@ return function(name, input, ctx)
     return finish("deny", why, { failure = "local rule" })
   end
 
-  local state, state_err = questions.state(name, input, ctx, cfg)
+  if kind == "ask" then
+    local bad = questions.check_ask_input(input)
+    if bad then
+      return finish("deny", bad, { failure = "ask input" })
+    end
+  end
+
+  local state, state_err = questions.state(name, input, ctx, cfg, { kind = kind })
   if not state then
     return finish("deny", tostring(state_err), { failure = tostring(state_err) })
   end
+  local labels = kind == "ask" and questions.option_labels(input) or nil
   local answers, err, usage = registry.call("fn.typesafe", {
     state = state,
     model = cfg.model or "jev-latest",
-    questions = questions.battery(),
+    questions = questions.battery(kind, labels and #labels),
   }, ctx)
 
   if not answers then
     return finish("deny", tostring(err), { failure = tostring(err), state = state })
   end
 
-  local action, reason = policy.route(answers, cfg, state.capability)
+  local action, reason = policy.route(answers, cfg, state.capability, kind, labels)
   return finish(action, reason, { answers = answers, state = state, usage = usage })
 end
 ]==],
@@ -359,7 +370,7 @@ return function(op, name, input, ctx, info)
       plugin.effective and plugin.effective() or plugin.config)
     local reason = denied and why or "no ctx to await on"
     pcall(registry.try_call, "fn.classifier_audit", bufnr or 0, {
-      tool = tostring(name), capability = "unknown", action = "deny",
+      tool = tostring(name), kind = "none", capability = "unknown", action = "deny",
       reason = reason, failure = denied and "local rule" or "no ctx",
       digest = vim.inspect(input):sub(1, 400), ms = 0,
     })

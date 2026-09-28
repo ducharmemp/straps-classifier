@@ -12,6 +12,8 @@ M.config = {
   deny_threshold = 0.85,
   damage_deny = 2.5,
   opaque_action = "deny",
+  ask_deny_threshold = nil,
+  ask_cutoffs = nil,
   always_deny_patterns = {
     "rm%s+%-rf%s+/",
     "%.ssh/id_",
@@ -26,6 +28,7 @@ M.config = {
     "NVIM_LISTEN_ADDRESS",
   },
   max_state_bytes = 4000,
+  ask_state_bytes = 16000,
   audit_limit = 500,
   on_verdict = nil,
 }

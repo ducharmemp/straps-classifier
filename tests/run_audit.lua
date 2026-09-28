@@ -57,14 +57,23 @@ case("every verdict keeps the state it was judged on", function()
     source = [[
 return function(payload, ctx)
   if not (ctx and ctx.await) then return nil, "no ctx to await on" end
-  local questions = require("straps_classifier.questions")
+  _G.AUDIT_PAYLOAD = payload
   local out = {}
-  for _, q in ipairs(questions.QUESTIONS) do
-    if q.type == "noul" then out[q.id] = { type = "noul", noul = 0.01 } end
+  for id, q in pairs(payload.questions) do
+    if q.type == "noul" then
+      local p = 0.01
+      if id:match("^viable_") or id == "states_deciding_factor" then
+        p = 0.9
+      end
+      out[id] = { type = "noul", noul = p }
+    elseif q.type == "score" then
+      local legend = {}
+      for i, text in ipairs(q.criteria) do legend[tostring(i - 1)] = text end
+      out[id] = { type = "score", score = 0.1, legend = legend, confidence = 0.9 }
+    elseif q.type == "choice" then
+      out[id] = { type = "choice", choice = "none", confidence = 0.9 }
+    end
   end
-  local legend = {}
-  for i, text in ipairs(questions.DAMAGE_LEVELS) do legend[tostring(i - 1)] = text end
-  out.damage = { type = "score", score = 0.1, legend = legend, confidence = 0.9 }
   return out, nil, { input_tokens = 123 }
 end
 ]],
@@ -81,6 +90,37 @@ end
   assert(lines[1]:find("^b"), "strongest noul first: " .. lines[1])
   assert(lines[2]:find("^damage"), "score sorted by legend position: " .. lines[2])
   assert(lines[#lines]:find("^odd"), "shapeless answers sort last")
+end)
+
+case("an ask_user verdict records its battery and shows it in the record", function()
+  audit.clear()
+  local b = fresh_session()
+  local ctx = { bufnr = b, await = function(_) return nil end }
+  local prev = registry.set_active_scope(b)
+  local action = registry.call("fn.risk_verdict", "ask_user", { question = "Which?", options = { "a", "b" } }, ctx)
+  registry.set_active_scope(prev)
+  assert(action == "ok", "the quiet ask battery should allow")
+  assert(_G.AUDIT_PAYLOAD.questions.damage == nil, "no damage sent for ask_user")
+  assert(_G.AUDIT_PAYLOAD.questions.vague_option ~= nil, "the ask battery was sent")
+  local rec = audit.all()[1].entries[1]
+  assert(rec.kind == "ask", "the record should carry kind=ask, got " .. tostring(rec.kind))
+  registry.call("fn.risk_verdict", "ping", { x = 1 }, ctx)
+  assert(audit.all()[1].entries[2].kind == "hazard", "other tools record kind=hazard")
+end)
+
+case("last_user_text skips harness notices", function()
+  local questions = require("straps_classifier.questions")
+  local b = fresh_session()
+  state.append(b, "user", nil, "pick the parser")
+  state.append(b, "user", nil, "[straps] another agent is running in this Neovim")
+  local text = questions.last_user_text(b, 500)
+  assert(text == "pick the parser", "the notice should be skipped, got " .. vim.inspect(text))
+  local long = ("x"):rep(50) .. "DECIDE"
+  state.append(b, "user", nil, long)
+  local tail = questions.last_user_text(b, 10, "tail")
+  assert(tail:find("DECIDE", 1, true), "tail keeps the end: " .. tail)
+  local head = questions.last_user_text(b, 10)
+  assert(not head:find("DECIDE", 1, true), "head keeps the start: " .. head)
 end)
 
 case("the ring caps at audit_limit and drops the oldest", function()
