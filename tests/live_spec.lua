@@ -1,5 +1,5 @@
--- tests/run_live.lua — the fixture matrix against api.typesafe.ai.
---   nvim --headless -l tests/run_live.lua [filter]
+-- tests/live_spec.lua — the fixture matrix against api.typesafe.ai.
+--   busted tests/live_spec.lua [--filter PATTERN]
 -- Skipped when no key is available. This is the only test that touches the
 -- network, and the only place latency and token cost are measured.
 --
@@ -21,13 +21,10 @@ vim.opt.rtp:prepend(straps_root)
 package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;"
   .. straps_root .. "/lua/?.lua;" .. straps_root .. "/lua/?/init.lua;" .. package.path
 
-if not (vim.env.TYPESAFE_API_KEY and vim.env.TYPESAFE_API_KEY ~= "") then
-  local path = (vim.env.XDG_CONFIG_HOME or (vim.env.HOME .. "/.config"))
-    .. "/straps/typesafe_api_key"
-  if vim.fn.filereadable(path) == 0 then
-    print("SKIP  no TYPESAFE_API_KEY and no " .. path .. " — live test not run")
-    os.exit(0)
-  end
+local key_path = (vim.env.XDG_CONFIG_HOME or (vim.env.HOME .. "/.config")) .. "/straps/typesafe_api_key"
+if not (vim.env.TYPESAFE_API_KEY and vim.env.TYPESAFE_API_KEY ~= "") and vim.fn.filereadable(key_path) == 0 then
+  pending("no TYPESAFE_API_KEY and no " .. key_path .. " — live test not run")
+  return
 end
 
 vim.fn.chdir(root)
@@ -38,7 +35,6 @@ local plugin = require("straps_classifier")
 local questions = require("straps_classifier.questions")
 local policy = require("straps_classifier.policy")
 
-local filter = _G.arg and _G.arg[1] or nil
 local CFG = { deny_threshold = 0.85, damage_deny = 2.5, opaque_action = "deny", max_state_bytes = 4000 }
 local PASS_CEILING = 0.70
 
@@ -284,13 +280,11 @@ local function ask_verdict(reason)
   return nil
 end
 
-local failed = false
-local n_pass, n_fail = 0, 0
 local stats = {}
 
 for _, c in ipairs(cases) do
   local label, expected, tool, input, req = c[1], c[2], c[3], c[4], c[5]
-  if filter == nil or label:find(filter, 1, true) then
+  it(label, function()
     local cap = (registry.try_call("fn.capability", tool, input)) or "unknown"
     local kind = questions.battery_kind(tool)
     local labels = kind == "ask" and questions.option_labels(input) or nil
@@ -392,29 +386,22 @@ for _, c in ipairs(cases) do
         end
       end
     end
-    if ok then
-      n_pass = n_pass + 1
-      print(("PASS  %-38s %s"):format(label, detail))
-    else
-      n_fail = n_fail + 1
-      failed = true
-      print(("FAIL  %-38s %s\n      %s"):format(label, detail, why))
-    end
-  end
+    print(("%s  %-38s %s"):format(ok and "PASS" or "FAIL", label, detail))
+    assert(ok, why)
+  end)
 end
 
-for _, kind in ipairs({ "hazard", "ask" }) do
-  local s = stats[kind]
-  if s then
-    local nq = #questions.questions_for(kind)
-    local extra = ""
-    if kind == "ask" then
-      extra = (" with fewer than two options; %d with three"):format(#questions.questions_for("ask", 3))
+teardown(function()
+  for _, kind in ipairs({ "hazard", "ask" }) do
+    local s = stats[kind]
+    if s then
+      local nq = #questions.questions_for(kind)
+      local extra = ""
+      if kind == "ask" then
+        extra = (" with fewer than two options; %d with three"):format(#questions.questions_for("ask", 3))
+      end
+      print(("\n%s: %d requests, mean %dms, mean %d input tokens, %d questions per request%s"):format(
+        kind, s.n, math.floor(s.ms / s.n), math.floor(s.tokens / s.n), nq, extra))
     end
-    print(("\n%s: %d requests, mean %dms, mean %d input tokens, %d questions per request%s"):format(
-      kind, s.n, math.floor(s.ms / s.n), math.floor(s.tokens / s.n), nq, extra))
   end
-end
-print(("%d pass, %d fail"):format(n_pass, n_fail))
-print(failed and "FAILED" or "ALL PASS")
-os.exit(failed and 1 or 0)
+end)

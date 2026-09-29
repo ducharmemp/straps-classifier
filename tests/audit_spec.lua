@@ -1,5 +1,5 @@
--- tests/run_audit.lua — the classification record and its buffer view.
---   nvim --headless -l tests/run_audit.lua
+-- tests/audit_spec.lua — the classification record and its buffer view.
+--   busted tests/audit_spec.lua
 -- No network. $STRAPS_ROOT overrides the straps checkout (default ../straps).
 
 local here = debug.getinfo(1, "S").source:sub(2)
@@ -14,17 +14,6 @@ vim.opt.rtp:prepend(straps_root)
 package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;"
   .. straps_root .. "/lua/?.lua;" .. straps_root .. "/lua/?/init.lua;" .. package.path
 
-local failed = false
-local function case(name, fn)
-  local ok, err = pcall(fn)
-  if ok then
-    print("PASS  " .. name)
-  else
-    failed = true
-    print("FAIL  " .. name .. ": " .. tostring(err))
-  end
-end
-
 local straps = require("straps").setup({})
 straps.config.session_dir = vim.fn.tempname()
 local registry = require("straps.registry")
@@ -38,7 +27,7 @@ local function fresh_session()
   return state.new_session()
 end
 
-case("a record lands in the ring", function()
+it("a record lands in the ring", function()
   audit.clear()
   local b = fresh_session()
   audit.record(b, { tool = "ping", capability = "other", action = "ok", reason = "quiet" })
@@ -50,7 +39,7 @@ case("a record lands in the ring", function()
   assert(all[1].entries[1].seq == 1, "entries are sequenced")
 end)
 
-case("every verdict keeps the state it was judged on", function()
+it("every verdict keeps the state it was judged on", function()
   audit.clear()
   registry.define({
     name = "fn.typesafe", kind = "fn", doc = "test stub: quiet battery",
@@ -92,7 +81,7 @@ end
   assert(lines[#lines]:find("^odd"), "shapeless answers sort last")
 end)
 
-case("an ask_user verdict records its battery and shows it in the record", function()
+it("an ask_user verdict records its battery and shows it in the record", function()
   audit.clear()
   local b = fresh_session()
   local ctx = { bufnr = b, await = function(_) return nil end }
@@ -108,7 +97,7 @@ case("an ask_user verdict records its battery and shows it in the record", funct
   assert(audit.all()[1].entries[2].kind == "hazard", "other tools record kind=hazard")
 end)
 
-case("last_user_text skips harness notices", function()
+it("last_user_text skips harness notices", function()
   local questions = require("straps_classifier.questions")
   local b = fresh_session()
   state.append(b, "user", nil, "pick the parser")
@@ -123,7 +112,7 @@ case("last_user_text skips harness notices", function()
   assert(not head:find("DECIDE", 1, true), "head keeps the start: " .. head)
 end)
 
-case("the ring caps at audit_limit and drops the oldest", function()
+it("the ring caps at audit_limit and drops the oldest", function()
   audit.clear()
   plugin.config.audit_limit = 5
   local b = fresh_session()
@@ -137,7 +126,7 @@ case("the ring caps at audit_limit and drops the oldest", function()
   plugin.config.audit_limit = 500
 end)
 
-case("counts report allows, denies, and causes", function()
+it("counts report allows, denies, and causes", function()
   audit.clear()
   local b = fresh_session()
   audit.record(b, { tool = "a", action = "ok", reason = "quiet" })
@@ -149,7 +138,7 @@ case("counts report allows, denies, and causes", function()
   assert(causes["HTTP 500"] == 1 and causes["timeout"] == 1, "causes should be tallied")
 end)
 
-case("a child's entries carry its parent and depth", function()
+it("a child's entries carry its parent and depth", function()
   audit.clear()
   local parent = fresh_session()
   local child = fresh_session()
@@ -161,7 +150,7 @@ case("a child's entries carry its parent and depth", function()
   assert(rec.depth == 1, "the depth should be recorded")
 end)
 
-case("a session's path is kept so a closed session stays identifiable", function()
+it("a session's path is kept so a closed session stays identifiable", function()
   audit.clear()
   local b = fresh_session()
   local name = vim.api.nvim_buf_get_name(b)
@@ -177,7 +166,7 @@ case("a session's path is kept so a closed session stays identifiable", function
   assert(#after.entries == 1, "its entries should still be there")
 end)
 
-case("children sort under their parent", function()
+it("children sort under their parent", function()
   audit.clear()
   local parent = fresh_session()
   local child = fresh_session()
@@ -190,7 +179,7 @@ case("children sort under their parent", function()
   assert(all[2].key == child, "the child follows it")
 end)
 
-case("the buffer renders every session and marks denies", function()
+it("the buffer renders every session and marks denies", function()
   audit.clear()
   local b = fresh_session()
   audit.record(b, { tool = "bash", action = "deny", reason = "data_loss=0.91" })
@@ -205,7 +194,7 @@ case("the buffer renders every session and marks denies", function()
   assert(not vim.bo[buf].modifiable, "the view should be read-only")
 end)
 
-case("an empty audit renders without error", function()
+it("an empty audit renders without error", function()
   audit.clear()
   local buf = vim.api.nvim_create_buf(false, true)
   audit.render(buf)
@@ -213,7 +202,7 @@ case("an empty audit renders without error", function()
   assert(text:find("no classifications", 1, true), "should say so:\n" .. text)
 end)
 
-case("clearing one session leaves the others", function()
+it("clearing one session leaves the others", function()
   audit.clear()
   local a, b = fresh_session(), fresh_session()
   audit.record(a, { tool = "x", action = "ok", reason = "q" })
@@ -223,20 +212,20 @@ case("clearing one session leaves the others", function()
   assert(#all == 1 and all[1].key == b, "only the cleared session should go")
 end)
 
-case("audit_limit below 1 is refused by setup", function()
+it("audit_limit below 1 is refused by setup", function()
   local ok, err = pcall(plugin.setup, { audit_limit = 0 })
   assert(not ok, "audit_limit = 0 must be refused")
   assert(tostring(err):find("audit_limit", 1, true), "the error should name it: " .. tostring(err))
 end)
 
-case("fn.classifier_audit records through the registry", function()
+it("fn.classifier_audit records through the registry", function()
   audit.clear()
   local b = fresh_session()
   registry.call("fn.classifier_audit", b, { tool = "via_registry", action = "ok", reason = "q" })
   assert(audit.all()[1].entries[1].tool == "via_registry", "the fn should be the writer")
 end)
 
-case("fn.log receives one classify event per verdict", function()
+it("fn.log receives one classify event per verdict", function()
   audit.clear()
   _G.LOGGED = {}
   registry.define({
@@ -266,5 +255,3 @@ end
   assert(seen, "no classify event was logged")
 end)
 
-print(failed and "FAILED" or "ALL PASS")
-os.exit(failed and 1 or 0)

@@ -366,17 +366,21 @@ The classifier is a check on an agent doing something rash. It is not a sandbox.
 ## Tests
 
 ```sh
-nvim --headless -l tests/run_policy.lua       # pure routing
-nvim --headless -l tests/run_local_rules.lua  # pattern rules
-nvim --headless -l tests/run_guard.lua        # the guard
-nvim --headless -l tests/run_confirm.lua      # the confirm chain
-nvim --headless -l tests/run_audit.lua        # the record and its view
-nvim --headless -l tests/run_live.lua         # the fixture matrix (needs a key)
-nvim --headless -l tests/run_live.lua ask     # only the ask_user fixtures
+busted tests/policy_spec.lua              # pure routing
+busted tests/local_rules_spec.lua         # pattern rules
+busted tests/guard_spec.lua               # the guard
+busted tests/confirm_spec.lua             # the confirm chain
+busted tests/audit_spec.lua               # the record and its view
+busted tests/live_spec.lua                # the fixture matrix (needs a key)
+busted tests/live_spec.lua --filter ask   # only the ask_user fixtures
 ```
 
-Everything but `run_live.lua` runs offline against a scripted backend. Tests that
+`.busted` runs every spec under `nlua`, so each sees `vim.*` inside a headless
+Neovim. Run one spec per `busted` process: the specs share straps' registry
+singleton and assume a fresh editor.
+
+Everything but `live_spec.lua` runs offline against a scripted backend. Tests that
 need straps find it at `../straps` or `$STRAPS_ROOT`.
 
 Under nix, `nix flake check` runs the same set with `STRAPS_ROOT` pointed at the
-flake input, and `nix develop` puts neovim, curl and that variable in scope.
+flake input, and `nix develop` puts neovim, curl, busted, nlua and that variable in scope.

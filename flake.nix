@@ -103,7 +103,10 @@
         tests = pkgs.stdenvNoCC.mkDerivation {
           name = "straps-classifier-tests";
           src = self;
-          nativeBuildInputs = [ pkgs.neovim pkgs.curl ];
+          nativeBuildInputs = [
+            pkgs.neovim pkgs.curl
+            pkgs.luajitPackages.busted pkgs.luajitPackages.nlua
+          ];
           dontBuild = true;
           doCheck = true;
           checkPhase = ''
@@ -112,12 +115,13 @@
             # The integration tests need a straps checkout on the rtp; take it
             # from the flake input rather than the ../straps default.
             export STRAPS_ROOT=${straps}
-            # run_live.lua is the only networked test and skips without a key,
-            # which is what it should do in a sandboxed build.
+            # live_spec.lua is the only networked test and is pending without a
+            # key, which is what it should do in a sandboxed build. One busted
+            # process per spec: the specs share the registry singleton.
             fail=0
-            for t in tests/run_*.lua; do
+            for t in tests/*_spec.lua; do
               echo "== $t"
-              nvim --headless -l "$t" || fail=1
+              busted "$t" || fail=1
             done
             [ "$fail" = 0 ]
           '';
@@ -127,7 +131,10 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = [ pkgs.neovim pkgs.curl ];
+          packages = [
+            pkgs.neovim pkgs.curl
+            pkgs.luajitPackages.busted pkgs.luajitPackages.nlua
+          ];
           shellHook = ''
             export STRAPS_ROOT=''${STRAPS_ROOT:-${straps}}
           '';

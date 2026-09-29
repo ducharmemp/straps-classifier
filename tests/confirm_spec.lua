@@ -1,6 +1,6 @@
--- tests/run_confirm.lua — the confirm chain: the operator decides first, and
+-- tests/confirm_spec.lua — the confirm chain: the operator decides first, and
 -- the classifier can only take that yes away.
---   nvim --headless -l tests/run_confirm.lua
+--   busted tests/confirm_spec.lua
 -- No network. $STRAPS_ROOT overrides the straps checkout (default ../straps).
 
 local here = debug.getinfo(1, "S").source:sub(2)
@@ -14,17 +14,6 @@ vim.opt.rtp:prepend(root)
 vim.opt.rtp:prepend(straps_root)
 package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;"
   .. straps_root .. "/lua/?.lua;" .. straps_root .. "/lua/?/init.lua;" .. package.path
-
-local failed = false
-local function case(name, fn)
-  local ok, err = pcall(fn)
-  if ok then
-    print("PASS  " .. name)
-  else
-    failed = true
-    print("FAIL  " .. name .. ": " .. tostring(err))
-  end
-end
 
 local straps = require("straps").setup({})
 straps.config.session_dir = vim.fn.tempname()
@@ -51,7 +40,7 @@ local confirm = registry.bind("hook.confirm")
 
 local ctx = { bufnr = 1 }
 
-case("a call the operator rejects never reaches the classifier", function()
+it("a call the operator rejects never reaches the classifier", function()
   _G.OP.allow, _G.OP.calls = false, 0
   entries.put_verdict(1, "ping", {}, "ok", "quiet")
   local allowed, why = confirm("ping", {}, ctx)
@@ -61,7 +50,7 @@ case("a call the operator rejects never reaches the classifier", function()
   assert(entries.take_verdict(1, "ping", {}) == nil, "a rejected call must clear the slot")
 end)
 
-case("an approved call with an ok verdict proceeds", function()
+it("an approved call with an ok verdict proceeds", function()
   _G.OP.allow, _G.OP.calls = true, 0
   entries.put_verdict(1, "ping", {}, "ok", "highest secrets=0.02")
   local allowed = confirm("ping", {}, ctx)
@@ -69,7 +58,7 @@ case("an approved call with an ok verdict proceeds", function()
   assert(_G.OP.calls == 1, "the operator is asked first")
 end)
 
-case("an approved call with a deny verdict is blocked", function()
+it("an approved call with a deny verdict is blocked", function()
   _G.OP.allow = true
   entries.put_verdict(1, "ping", {}, "deny", "data_loss=0.94 (>= 0.85)")
   local allowed, why = confirm("ping", {}, ctx)
@@ -78,7 +67,7 @@ case("an approved call with a deny verdict is blocked", function()
   assert(why:find("data_loss=0.94", 1, true), "the reason should carry the question: " .. why)
 end)
 
-case("a missing verdict blocks", function()
+it("a missing verdict blocks", function()
   _G.OP.allow = true
   entries.clear_verdict()
   local allowed, why = confirm("ping", {}, ctx)
@@ -86,7 +75,7 @@ case("a missing verdict blocks", function()
   assert(why:find("no verdict", 1, true), "the reason should say so: " .. why)
 end)
 
-case("a verdict for a different call does not satisfy this one", function()
+it("a verdict for a different call does not satisfy this one", function()
   _G.OP.allow = true
   entries.put_verdict(1, "ping", { a = 1 }, "ok", "quiet")
   local allowed, why = confirm("ping", { a = 2 }, ctx)
@@ -94,14 +83,14 @@ case("a verdict for a different call does not satisfy this one", function()
   assert(why:find("no verdict", 1, true), "the reason should say so: " .. why)
 end)
 
-case("a verdict for a different session does not satisfy this one", function()
+it("a verdict for a different session does not satisfy this one", function()
   _G.OP.allow = true
   entries.put_verdict(99, "ping", {}, "ok", "quiet")
   local allowed = confirm("ping", {}, ctx)
   assert(allowed == false, "a verdict is bound to its session")
 end)
 
-case("the slot is empty after the confirm reads it", function()
+it("the slot is empty after the confirm reads it", function()
   _G.OP.allow = true
   entries.put_verdict(1, "ping", {}, "ok", "quiet")
   assert(confirm("ping", {}, ctx) == true, "first read allows")
@@ -109,7 +98,7 @@ case("the slot is empty after the confirm reads it", function()
   assert(allowed == false, "the verdict must not answer a second call")
 end)
 
-case("a silent cap: grant still reaches the classifier", function()
+it("a silent cap: grant still reaches the classifier", function()
   -- straps' own grant check underneath: with cap:exec granted the operator is
   -- never prompted, and the classifier still gets the last word. register() is
   -- idempotent, so re-chaining over the new predecessor is the shipped path.
@@ -149,7 +138,7 @@ end
     "the predecessor still decides first: " .. tostring(why2))
 end)
 
-case("one session's verdict does not disturb another's", function()
+it("one session's verdict does not disturb another's", function()
   -- Two sessions run concurrently in one Neovim (a parent and its subagent, or
   -- two peers). Session B's guard must not consume or clobber the verdict
   -- session A's guard produced. Re-chain over the permissive operator stub:
@@ -189,5 +178,3 @@ end
     "A's verdict must survive B's rejection")
 end)
 
-print(failed and "FAILED" or "ALL PASS")
-os.exit(failed and 1 or 0)

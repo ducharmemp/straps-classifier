@@ -1,22 +1,11 @@
--- tests/run_policy.lua — policy.route: every threshold boundary.
---   nvim --headless -l tests/run_policy.lua
+-- tests/policy_spec.lua — policy.route: every threshold boundary.
+--   busted tests/policy_spec.lua
 -- No network, no straps: policy.lua and questions.lua are pure Lua.
 
 local here = debug.getinfo(1, "S").source:sub(2)
 local root = vim.fn.fnamemodify(vim.fn.fnamemodify(here, ":p"), ":h:h")
 vim.opt.rtp:prepend(root)
 package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;" .. package.path
-
-local failed = false
-local function case(name, fn)
-  local ok, err = pcall(fn)
-  if ok then
-    print("PASS  " .. name)
-  else
-    failed = true
-    print("FAIL  " .. name .. ": " .. tostring(err))
-  end
-end
 
 local questions = require("straps_classifier.questions")
 local policy = require("straps_classifier.policy")
@@ -46,12 +35,12 @@ local function answers(p, score, conf)
   return out
 end
 
-case("a quiet battery is ok", function()
+it("a quiet battery is ok", function()
   local action, reason = policy.route(answers(0.02, 0.1), CFG)
   assert(action == "ok", "want ok, got " .. action .. ": " .. reason)
 end)
 
-case("a hazard at the threshold denies", function()
+it("a hazard at the threshold denies", function()
   local a = answers(0.1, 0.1)
   a.writes_outside_root.noul = 0.85
   local action, reason = policy.route(a, CFG)
@@ -59,14 +48,14 @@ case("a hazard at the threshold denies", function()
   assert(reason:find("writes_outside_root=0.85", 1, true), "reason should carry id and probability: " .. reason)
 end)
 
-case("a hazard just below the threshold does not deny", function()
+it("a hazard just below the threshold does not deny", function()
   local a = answers(0.1, 0.1)
   a.writes_outside_root.noul = 0.84
   local action = policy.route(a, CFG)
   assert(action == "ok", "0.84 should not deny")
 end)
 
-case("the reason names the highest hazard", function()
+it("the reason names the highest hazard", function()
   local a = answers(0.1, 0.1)
   a.reads_credentials.noul = 0.93
   a.sends_message.noul = 0.90
@@ -75,7 +64,7 @@ case("the reason names the highest hazard", function()
   assert(reason:find("reads_credentials", 1, true), "reason should name reads_credentials: " .. reason)
 end)
 
-case("the signal alone never denies as a hazard", function()
+it("the signal alone never denies as a hazard", function()
   local a = answers(0.1, 0.1)
   a.runs_script_outside_root.noul = 0.99
   local action, reason = policy.route(a, { deny_threshold = 0.85, damage_deny = 2.5, opaque_action = "log" })
@@ -83,7 +72,7 @@ case("the signal alone never denies as a hazard", function()
   assert(reason:find("opaque", 1, true), "reason should log the signal: " .. reason)
 end)
 
-case("the signal denies when opaque_action is deny", function()
+it("the signal denies when opaque_action is deny", function()
   local a = answers(0.1, 0.1)
   a.runs_script_outside_root.noul = 0.99
   local action, reason = policy.route(a, CFG)
@@ -91,14 +80,14 @@ case("the signal denies when opaque_action is deny", function()
   assert(reason:find("opaque", 1, true), "reason should say opaque: " .. reason)
 end)
 
-case("opaque_action defaults to deny", function()
+it("opaque_action defaults to deny", function()
   local a = answers(0.1, 0.1)
   a.runs_script_outside_root.noul = 0.99
   local action = policy.route(a, { deny_threshold = 0.85, damage_deny = 2.5 })
   assert(action == "deny", "the default must be deny")
 end)
 
-case("a hazard deny outranks the opaque signal in the reason", function()
+it("a hazard deny outranks the opaque signal in the reason", function()
   local a = answers(0.1, 0.1)
   a.runs_script_outside_root.noul = 0.99
   a.transmits_local_data.noul = 0.95
@@ -106,18 +95,18 @@ case("a hazard deny outranks the opaque signal in the reason", function()
   assert(reason:find("transmits_local_data", 1, true), "hazard should decide: " .. reason)
 end)
 
-case("damage at the threshold denies on its own", function()
+it("damage at the threshold denies on its own", function()
   local action, reason = policy.route(answers(0.05, 2.5), CFG)
   assert(action == "deny", "damage 2.5 should deny")
   assert(reason:find("damage", 1, true), "reason should name damage: " .. reason)
 end)
 
-case("low damage confidence does not downgrade a deny", function()
+it("low damage confidence does not downgrade a deny", function()
   local action = policy.route(answers(0.05, 2.9, 0.1), CFG)
   assert(action == "deny", "confidence must not open the gate")
 end)
 
-case("redefines_protected is ignored for an edit-capability tool", function()
+it("redefines_protected is ignored for an edit-capability tool", function()
   local a = answers(0.05, 0.1)
   a.redefines_protected.noul = 0.99
   local action = policy.route(a, CFG, "edit")
@@ -128,7 +117,7 @@ case("redefines_protected is ignored for an edit-capability tool", function()
   assert(action3 == "deny", "an unknown capability must not skip anything")
 end)
 
-case("a mismatched damage legend denies", function()
+it("a mismatched damage legend denies", function()
   local a = answers(0.01, 0.0)
   a.damage.legend["2"] = "something else entirely"
   local action, reason = policy.route(a, CFG)
@@ -136,7 +125,7 @@ case("a mismatched damage legend denies", function()
   assert(reason:find("legend", 1, true), "reason should name the legend: " .. reason)
 end)
 
-case("a missing hazard answer denies", function()
+it("a missing hazard answer denies", function()
   local a = answers(0.01, 0.0)
   a.reads_credentials = nil
   local action, reason = policy.route(a, CFG)
@@ -144,33 +133,33 @@ case("a missing hazard answer denies", function()
   assert(reason:find("reads_credentials", 1, true), "reason should name it: " .. reason)
 end)
 
-case("a missing signal answer denies", function()
+it("a missing signal answer denies", function()
   local a = answers(0.01, 0.0)
   a.runs_script_outside_root = nil
   local action = policy.route(a, CFG)
   assert(action == "deny", "a missing signal must deny")
 end)
 
-case("a missing damage answer denies", function()
+it("a missing damage answer denies", function()
   local a = answers(0.01, 0.0)
   a.damage = nil
   local action = policy.route(a, CFG)
   assert(action == "deny", "a missing damage answer must deny")
 end)
 
-case("nil answers deny", function()
+it("nil answers deny", function()
   local action = policy.route(nil, CFG)
   assert(action == "deny", "nil must deny")
 end)
 
-case("unreachable thresholds let nothing deny", function()
+it("unreachable thresholds let nothing deny", function()
   local a = answers(0.99, 3.0)
   a.runs_script_outside_root.noul = 0.99
   local action, reason = policy.route(a, { deny_threshold = 1.1, damage_deny = 99, opaque_action = "deny" })
   assert(action == "ok", "1.1 is unreachable for every probability, signal included: " .. reason)
 end)
 
-case("cutoffs override one command hazard at a time", function()
+it("cutoffs override one command hazard at a time", function()
   local cut, deny_at = policy.cutoffs(CFG)
   assert(deny_at == 0.85, "threshold from deny_threshold")
   for _, id in ipairs(questions.ids()) do
@@ -202,7 +191,7 @@ case("cutoffs override one command hazard at a time", function()
     "a cutoff does not un-skip redefines_protected for edit tools")
 end)
 
-case("the battery has the documented shape", function()
+it("the battery has the documented shape", function()
   assert(#questions.DAMAGE_LEVELS == 4, "want 4 levels")
   local hazards = questions.ids("hazard")
   local signals = questions.ids("signal")
@@ -218,7 +207,7 @@ case("the battery has the documented shape", function()
   assert(battery.damage.criteria == questions.DAMAGE_LEVELS, "damage uses the pinned levels")
 end)
 
-case("state refuses an over-cap exec input and elides prose for edit tools", function()
+it("state refuses an over-cap exec input and elides prose for edit tools", function()
   local big = ("x"):rep(5000)
   local cfg = { max_state_bytes = 4000 }
   local s, err = questions.state("bash", { command = big }, nil, cfg, { latest_user_request = "r", child = false })
@@ -234,7 +223,7 @@ case("state refuses an over-cap exec input and elides prose for edit tools", fun
   assert(s3 == nil, "without a known capability, an over-cap input is refused")
 end)
 
-case("state names the request field by session kind", function()
+it("state names the request field by session kind", function()
   local cfg = { max_state_bytes = 4000 }
   local parent = questions.state("bash", { command = "ls" }, nil, cfg, { latest_user_request = "r", child = false })
   assert(parent.latest_user_request == "r" and parent.parent_agent_task == nil, "parent field")
@@ -245,7 +234,7 @@ case("state names the request field by session kind", function()
   assert(type(parent.resolved_paths) == "nil", "a command has no structured paths")
 end)
 
-case("state resolves structured paths against the root", function()
+it("state resolves structured paths against the root", function()
   local cfg = { max_state_bytes = 4000 }
   local s = questions.state("read_file", { path = "README.md" }, nil, cfg, { latest_user_request = "r", child = false })
   local r = s.resolved_paths["README.md"]
@@ -292,12 +281,12 @@ local function signal_answers(p, over)
   return out
 end
 
-case("a quiet ask battery is ok and needs no damage answer", function()
+it("a quiet ask battery is ok and needs no damage answer", function()
   local action, reason = policy.route(ask_answers(0.05), CFG, "read", "ask")
   assert(action == "ok", "want ok, got " .. action .. ": " .. reason)
 end)
 
-case("each ask noul at the threshold denies with its id and fix", function()
+it("each ask noul at the threshold denies with its id and fix", function()
   for _, id in ipairs(questions.ids("hazard", "ask")) do
     local a = ask_answers(0.05)
     a[id].noul = 0.85
@@ -315,14 +304,14 @@ case("each ask noul at the threshold denies with its id and fix", function()
   end
 end)
 
-case("an ask noul just below the threshold does not deny", function()
+it("an ask noul just below the threshold does not deny", function()
   local a = ask_answers(0.05)
   a.loaded_premise.noul = 0.84
   local action = policy.route(a, CFG, "read", "ask")
   assert(action == "ok", "0.84 should not deny")
 end)
 
-case("a missing ask answer denies", function()
+it("a missing ask answer denies", function()
   local a = ask_answers(0.05)
   a.vague_option = nil
   local action, reason = policy.route(a, CFG, "read", "ask")
@@ -330,7 +319,7 @@ case("a missing ask answer denies", function()
   assert(reason:find("vague_option", 1, true), "reason should name it: " .. reason)
 end)
 
-case("a NaN or out-of-range ask answer denies", function()
+it("a NaN or out-of-range ask answer denies", function()
   for _, bad in ipairs({ 0 / 0, math.huge, -0.1, 1.5 }) do
     local a = ask_answers(0.05)
     a.package_deal.noul = bad
@@ -340,19 +329,19 @@ case("a NaN or out-of-range ask answer denies", function()
   end
 end)
 
-case("the hazard kind still needs damage", function()
+it("the hazard kind still needs damage", function()
   local a = answers(0.01, 0.0)
   a.damage = nil
   assert(policy.route(a, CFG, "read", "hazard") == "deny", "hazard kind without damage must deny")
 end)
 
-case("an unknown kind routes as the hazard battery", function()
+it("an unknown kind routes as the hazard battery", function()
   local action = policy.route(ask_answers(0.05), CFG, "read", "Ask")
   assert(action == "deny", "ask answers under an unknown kind must fail the hazard checks")
   assert(policy.route(answers(0.02, 0.1), CFG, "read", "Ask") == "ok", "hazard answers pass")
 end)
 
-case("ask_deny_threshold overrides and falls back to deny_threshold", function()
+it("ask_deny_threshold overrides and falls back to deny_threshold", function()
   local a = ask_answers(0.05)
   a.loaded_premise.noul = 0.7
   assert(policy.route(a, CFG, "read", "ask") == "ok", "0.7 is under the default")
@@ -363,7 +352,7 @@ case("ask_deny_threshold overrides and falls back to deny_threshold", function()
   assert(policy.route(b, watch, "read", "ask") == "ok", "watch mode stops ask denies")
 end)
 
-case("the ask battery has the documented shape", function()
+it("the ask battery has the documented shape", function()
   local ids = questions.ids("hazard", "ask")
   assert(#ids == 8, "want 8 fixed ask hazards, got " .. #ids)
   assert(ids[1] == "vague_option", "vague_option leads")
@@ -400,7 +389,7 @@ case("the ask battery has the documented shape", function()
   assert(#questions.ids("hazard") == 11 and #questions.ids("signal") == 1, "hazard ids unchanged")
 end)
 
-case("a Hobson's choice denies and names the non-options", function()
+it("a Hobson's choice denies and names the non-options", function()
   local a = signal_answers(0.05, { viable_2 = 0.07, viable_3 = 0.16 })
   local action, reason = policy.route(a, CFG, "read", "ask", LABELS)
   assert(action == "deny", "want deny: " .. reason)
@@ -412,7 +401,7 @@ case("a Hobson's choice denies and names the non-options", function()
   assert(reason:find("describe it as a competent engineer would build it", 1, true), "reason carries the strawman clause: " .. reason)
 end)
 
-case("a Hobson's choice with no viable option says so", function()
+it("a Hobson's choice with no viable option says so", function()
   local a = signal_answers(0.05, { viable_1 = 0.1, viable_2 = 0.07, viable_3 = 0.16 })
   local action, reason = policy.route(a, CFG, "read", "ask", LABELS)
   assert(action == "deny", "want deny")
@@ -420,7 +409,7 @@ case("a Hobson's choice with no viable option says so", function()
   assert(not reason:find("single recommendation", 1, true), "no option to recommend: " .. reason)
 end)
 
-case("Hobson's is decided by the viability count alone", function()
+it("Hobson's is decided by the viability count alone", function()
   local two_real = signal_answers(0.05, { viable_3 = 0.1 })
   assert(policy.route(two_real, CFG, "read", "ask", LABELS) == "ok", "two viable options is not a Hobson's choice")
   local edge = signal_answers(0.05, { viable_2 = 0.59, viable_3 = 0.1 })
@@ -433,7 +422,7 @@ end)
 
 local STEER1 = { choice = "1", confidence = 0.91 }
 
-case("a stacked deck names the options described only to lose", function()
+it("a stacked deck names the options described only to lose", function()
   local a = signal_answers(0.05, { steer = STEER1, asymmetric_detail = 0.9, disfavored_2 = 0.8, disfavored_3 = 0.6 })
   local action, reason = policy.route(a, CFG, "read", "ask", LABELS)
   assert(action == "deny", "want deny: " .. reason)
@@ -450,7 +439,7 @@ case("a stacked deck names the options described only to lose", function()
   assert(policy.route(quiet, CFG, "read", "ask", LABELS) == "ok", "disfavored alone never denies")
 end)
 
-case("an unsupported recommendation denies for any option count", function()
+it("an unsupported recommendation denies for any option count", function()
   for _, labels in ipairs({ {}, { "only" }, LABELS }) do
     local a = #labels >= 2 and signal_answers(0.05, { marked_recommended = 0.7, states_deciding_factor = 0.49 })
       or ask_answers(0.05, { marked_recommended = 0.7, states_deciding_factor = 0.49 })
@@ -466,7 +455,7 @@ case("an unsupported recommendation denies for any option count", function()
   assert(policy.route(unmarked, CFG, "read", "ask", {}) == "ok", "no mark, nothing to support")
 end)
 
-case("a stacked deck denies when steering is unearned", function()
+it("a stacked deck denies when steering is unearned", function()
   for _, over in ipairs({
     { asymmetric_detail = 0.92 },
     { decoy_present = 0.7 },
@@ -482,7 +471,7 @@ case("a stacked deck denies when steering is unearned", function()
   end
 end)
 
-case("honest steering passes", function()
+it("honest steering passes", function()
   local honest = signal_answers(0.05, { steer = { choice = "1", confidence = 0.95 }, fairness = { score = 1.9 } })
   assert(policy.route(honest, CFG, "read", "ask", LABELS) == "ok", "steer alone must not deny")
   local unsure = signal_answers(0.05, { steer = { choice = "1", confidence = 0.59 }, asymmetric_detail = 0.95 })
@@ -491,7 +480,7 @@ case("honest steering passes", function()
   assert(policy.route(even, CFG, "read", "ask", LABELS) == "ok", "steer none never stacks")
 end)
 
-case("verdict order: do-not-ask, Hobson's, stacked, unsupported, fixed hazard", function()
+it("verdict order: do-not-ask, Hobson's, stacked, unsupported, fixed hazard", function()
   local all = { viable_2 = 0.07, viable_3 = 0.16, steer = STEER1,
     asymmetric_detail = 0.95, marked_recommended = 0.95, states_deciding_factor = 0.1, vague_option = 0.99 }
   local function first(over)
@@ -509,7 +498,7 @@ case("verdict order: do-not-ask, Hobson's, stacked, unsupported, fixed hazard", 
   assert(first(no_unsup):sub(1, 23) == "question needs rework (", "fixed hazard last: " .. first(no_unsup))
 end)
 
-case("missing or malformed signals deny, for every option count", function()
+it("missing or malformed signals deny, for every option count", function()
   for _, broken in ipairs({
     function(a) a.viable_2 = nil end,
     function(a) a.viable_3.noul = 0 / 0 end,
@@ -541,7 +530,7 @@ case("missing or malformed signals deny, for every option count", function()
   end
 end)
 
-case("watch mode and ask_cutoffs", function()
+it("watch mode and ask_cutoffs", function()
   local hob = signal_answers(0.05, { viable_2 = 0.07, viable_3 = 0.16 })
   assert(policy.route(hob, { deny_threshold = 1.1 }, "read", "ask", LABELS) == "ok", "watch mode stops signal denies")
   local stop = ask_answers(0.05, { permission_seeking = 0.99 })
@@ -560,7 +549,7 @@ case("watch mode and ask_cutoffs", function()
   assert(policy.route(unsup, off3, "read", "ask", {}) == "ok", "marked_recommended above 1 disables it too")
 end)
 
-case("every fixed hazard has its own cutoff, defaulting to the ask threshold", function()
+it("every fixed hazard has its own cutoff, defaulting to the ask threshold", function()
   local cut, deny_at = policy.ask_cutoffs(CFG)
   assert(deny_at == 0.85, "threshold from deny_threshold")
   for _, id in ipairs(questions.ids("hazard", "ask")) do
@@ -584,7 +573,7 @@ case("every fixed hazard has its own cutoff, defaulting to the ask threshold", f
   assert(r3:find("package_deal=0.55 >= 0.50", 1, true), "the hazard furthest over its own cutoff decides: " .. r3)
 end)
 
-case("ask state keeps prose whole, refuses over the cap, and omits hazard fields", function()
+it("ask state keeps prose whole, refuses over the cap, and omits hazard fields", function()
   local long = ("an honest option described at length "):rep(200)
   local input = { question = "Which?", options = { { label = "A", preview = long }, "B" } }
   local cfg = { max_state_bytes = 4000, ask_state_bytes = 16000 }
@@ -605,7 +594,7 @@ case("ask state keeps prose whole, refuses over the cap, and omits hazard fields
   assert(c.parent_agent_task == "t" and c.latest_user_request == nil, "child field")
 end)
 
-case("check_ask_input allows the builtin's fields and refuses the rest", function()
+it("check_ask_input allows the builtin's fields and refuses the rest", function()
   assert(questions.check_ask_input({ question = "q" }) == nil, "bare question")
   assert(questions.check_ask_input({ question = "q", options = { "a", { label = "b", preview = "p", filetype = "lua" } },
     content = "c", filetype = "" }) == nil, "every builtin field")
@@ -637,6 +626,3 @@ case("check_ask_input allows the builtin's fields and refuses the rest", functio
   assert(questions.check_ask_input({ question = "q", options = { { label = "a", preview = ("l\n"):rep(199) .. "l" } } })
     == nil, "a 200-line preview is shown whole")
 end)
-
-print(failed and "FAILED" or "ALL PASS")
-os.exit(failed and 1 or 0)

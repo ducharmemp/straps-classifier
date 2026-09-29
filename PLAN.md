@@ -69,8 +69,8 @@ lua/straps_classifier/local_rules.lua path and command patterns, no network
 lua/straps_classifier/audit.lua       the per-session record and its buffer view
 lua/straps_classifier/entries.lua     the registry entries
 plugin/straps_classifier.lua          :StrapsClassifierAudit
-tests/run_policy.lua   tests/run_local_rules.lua  tests/run_guard.lua
-tests/run_confirm.lua  tests/run_audit.lua        tests/run_live.lua
+tests/policy_spec.lua   tests/local_rules_spec.lua  tests/guard_spec.lua
+tests/confirm_spec.lua  tests/audit_spec.lua        tests/live_spec.lua
 README.md
 ```
 
@@ -402,18 +402,18 @@ The straps working copy is back to its committed state — verified with `jj st`
 (no changes) and `tests/run_compact.lua` (10/10 passing).
 ## Tests
 
-Self-contained files run as `nvim --headless -l tests/run_X.lua`
-(`AGENTS.md:48-58`). Each prepends this repo and `$STRAPS_ROOT` (default
+busted specs, run one per process as `busted tests/X_spec.lua` under `nlua`
+(`.busted`). Each prepends this repo and `$STRAPS_ROOT` (default
 `../straps`) to `rtp` and `package.path`.
 
 | File | What it proves | Network |
 | --- | --- | --- |
-| `run_policy.lua` | every hazard threshold, per-hazard `cutoffs` (one relaxed, one tightened, the signal, the edit skip kept), the opaque signal denying or logging by `opaque_action`, `redefines_protected` skipped for edit tools, damage escalation with no confidence downgrade, a mismatched legend denying, missing answers denying, over-cap and path-resolution state building; the ask battery: each hazard at its cutoff denies with its fix and the right prefix (do-not-ask without the rework suffix), a missing, NaN, or out-of-range answer denies, no damage needed, an unknown kind routes as hazard, `ask_deny_threshold` and its fallback, the battery shape (10 with fewer than two options, 20 with three), unelided ask state, and the `ask_user` field check; Hobson's, stacked-deck (naming the disfavored options) and unsupported-recommendation verdicts with their reasons and cutoff edges, honest steering passing, the verdict order, malformed fixed and per-option signals denying for every option count, watch mode, `ask_cutoffs` for code verdicts and per-hazard cutoffs | none |
-| `run_local_rules.lua` | deny patterns fire with no key and no `ctx`, against command-like fields only and never prose | none |
-| `run_guard.lua` | with a scripted `fn.typesafe`: a child session classifies and blocks; a parent's loop call leaves enforcement to the confirm; a direct `registry.call` with no `ctx` is denied with `no ctx to await on`; a local rule denies with no request; an over-cap program input denies with no request; a repeated call is classified again; through `gate_tool`, the builtin `ask_user` gets the ask battery while a session shadow (even with the builtin's source), a global redefinition, and a version-1 impostor get the command battery; an `ask_user` input outside the builtin's fields denies with no request | none |
-| `run_confirm.lua` | a rejected call makes no request; an approved call is classified; a deny blocks with the question named; a silent `cap:` grant still reaches the classifier; a timeout blocks; a missing key blocks; the slot is empty after the confirm reads it | none |
-| `run_audit.lua` | every classification lands in the ring, allow and deny alike; every verdict keeps the state and answers it was judged on, with the token cost; `answer_lines` sorts strongest first across noul/score/shapeless; the ring caps at `audit_limit` and drops oldest; a child's entries carry its parent bufnr and depth; `fn.classifier_audit_render` groups by session and survives a closed session buffer; `audit_limit = 0` is refused; `fn.log` receives one `ev = "classify"` per verdict; an `ask_user` verdict records `kind = "ask"`; `last_user_text` skips `[straps] ` notices and keeps head or tail | none |
-| `run_live.lua` | the fixture matrix against Jev: every documented evasion denies on the intended question, every must-pass case (the plugin's own development included) stays clear, and the `ask ...` fixtures (`run_live.lua ask`) deny rigged questions and pass honest ones; mean latency and token cost printed per battery; skipped with a note when `TYPESAFE_API_KEY` is unset | live |
+| `policy_spec.lua` | every hazard threshold, per-hazard `cutoffs` (one relaxed, one tightened, the signal, the edit skip kept), the opaque signal denying or logging by `opaque_action`, `redefines_protected` skipped for edit tools, damage escalation with no confidence downgrade, a mismatched legend denying, missing answers denying, over-cap and path-resolution state building; the ask battery: each hazard at its cutoff denies with its fix and the right prefix (do-not-ask without the rework suffix), a missing, NaN, or out-of-range answer denies, no damage needed, an unknown kind routes as hazard, `ask_deny_threshold` and its fallback, the battery shape (10 with fewer than two options, 20 with three), unelided ask state, and the `ask_user` field check; Hobson's, stacked-deck (naming the disfavored options) and unsupported-recommendation verdicts with their reasons and cutoff edges, honest steering passing, the verdict order, malformed fixed and per-option signals denying for every option count, watch mode, `ask_cutoffs` for code verdicts and per-hazard cutoffs | none |
+| `local_rules_spec.lua` | deny patterns fire with no key and no `ctx`, against command-like fields only and never prose | none |
+| `guard_spec.lua` | with a scripted `fn.typesafe`: a child session classifies and blocks; a parent's loop call leaves enforcement to the confirm; a direct `registry.call` with no `ctx` is denied with `no ctx to await on`; a local rule denies with no request; an over-cap program input denies with no request; a repeated call is classified again; through `gate_tool`, the builtin `ask_user` gets the ask battery while a session shadow (even with the builtin's source), a global redefinition, and a version-1 impostor get the command battery; an `ask_user` input outside the builtin's fields denies with no request | none |
+| `confirm_spec.lua` | a rejected call makes no request; an approved call is classified; a deny blocks with the question named; a silent `cap:` grant still reaches the classifier; a timeout blocks; a missing key blocks; the slot is empty after the confirm reads it | none |
+| `audit_spec.lua` | every classification lands in the ring, allow and deny alike; every verdict keeps the state and answers it was judged on, with the token cost; `answer_lines` sorts strongest first across noul/score/shapeless; the ring caps at `audit_limit` and drops oldest; a child's entries carry its parent bufnr and depth; `fn.classifier_audit_render` groups by session and survives a closed session buffer; `audit_limit = 0` is refused; `fn.log` receives one `ev = "classify"` per verdict; an `ask_user` verdict records `kind = "ask"`; `last_user_text` skips `[straps] ` notices and keeps head or tail | none |
+| `live_spec.lua` | the fixture matrix against Jev: every documented evasion denies on the intended question, every must-pass case (the plugin's own development included) stays clear, and the `ask ...` fixtures (`busted tests/live_spec.lua --filter ask`) deny rigged questions and pass honest ones; mean latency and token cost printed per battery; skipped with a note when `TYPESAFE_API_KEY` is unset | live |
 
 Straps is unmodified, so its own suite is unaffected; `tests/run_compact.lua`
 was run after the Part B revert to confirm it (10/10 passing).
@@ -429,7 +429,7 @@ was run after the Part B revert to confirm it (10/10 passing).
 - **Every tool call costs a round trip, reads included.** The parallel read batch
   gates each block in sequence (`loop.lua:488-506`), so a ten-read batch is ten
   sequential requests before any read starts. I have no latency figure for Jev;
-  `run_live.lua` prints it, and that number may force a batching design.
+  `live_spec.lua` prints it, and that number may force a batching design.
 - **The `ask_user` battery** measured about 300ms and 5,270 input tokens per
   request over the sixteen `ask` fixtures, most with three options (jev-latest,
   2026-09-28); about 3,100 with no options.
@@ -465,18 +465,18 @@ was run after the Part B revert to confirm it (10/10 passing).
   holds for NaN, and `vim.json.decode` parses `NaN`). This predates the
   `ask_user` battery, which rejects them.
 - Adding `tool.ask_user` to `PROTECTED` may raise `redefines_protected` on exec
-  commands that mention it, such as running `tests/run_guard.lua`. The existing
+  commands that mention it, such as running `tests/guard_spec.lua`. The existing
   `nvim -l tests/run_guard.lua` live fixture still passes.
 - The near-duplicate fixture routes to Hobson's choice (viable 0.06-0.38 on
   every option, so "0 of 3 viable") ahead of `distinction_without_difference`
   (0.88-0.94). The deny is right and the fix text is not. Deciding whether
-  duplicates should be checked before Hobson's is open; `run_live.lua` prints
+  duplicates should be checked before Hobson's is open; `live_spec.lua` prints
   it as WARN.
 - `fabricated_cost` reads "removes that scan tonight" as a time claim
   (0.72-0.73 on the honest recommendation in some runs, under the deny line).
 - The cutoffs in `policy.ASK_CUTOFFS` come from sixteen fixtures, not a
   hand-labelled sample of real option sets.
-- `run_live.lua` matches an ask fixture's verdict by reason prefix against a
+- `live_spec.lua` matches an ask fixture's verdict by reason prefix against a
   list of acceptable verdicts, first preferred; a listed but non-preferred
   verdict prints WARN, an unlisted one fails.
 - Uncovered question shapes: abdication (asking the user a fact the agent can
@@ -502,6 +502,6 @@ classifier has no approve path at all.
 A seventh finding surfaced during implementation rather than review: calling
 `register()` twice re-captured the plugin's own confirm as its predecessor and
 recursed until the stack blew. `entries.register()` is now idempotent, and
-`run_guard.lua` covers it.
+`guard_spec.lua` covers it.
 
 A second review runs against this revision before any code is written.

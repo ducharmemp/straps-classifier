@@ -1,5 +1,5 @@
--- tests/run_guard.lua — the guard: where it classifies, where it blocks.
---   nvim --headless -l tests/run_guard.lua
+-- tests/guard_spec.lua — the guard: where it classifies, where it blocks.
+--   busted tests/guard_spec.lua
 -- No network: fn.typesafe is replaced with a scripted stub before setup().
 -- $STRAPS_ROOT overrides the straps checkout (default ../straps).
 
@@ -14,17 +14,6 @@ vim.opt.rtp:prepend(root)
 vim.opt.rtp:prepend(straps_root)
 package.path = root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua;"
   .. straps_root .. "/lua/?.lua;" .. straps_root .. "/lua/?/init.lua;" .. package.path
-
-local failed = false
-local function case(name, fn)
-  local ok, err = pcall(fn)
-  if ok then
-    print("PASS  " .. name)
-  else
-    failed = true
-    print("FAIL  " .. name .. ": " .. tostring(err))
-  end
-end
 
 local straps = require("straps").setup({})
 straps.config.session_dir = vim.fn.tempname()
@@ -129,7 +118,7 @@ end
   return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
 end
 
-case("a parent session classifies once and the call proceeds", function()
+it("a parent session classifies once and the call proceeds", function()
   _G.TS.calls, _G.TS.mode, _G.TS.ping = 0, "quiet", 0
   local b = state.new_session()
   local text = run_one(b, "ping", {})
@@ -138,7 +127,7 @@ case("a parent session classifies once and the call proceeds", function()
   assert(not text:find("classifier:", 1, true), "nothing should have been blocked:\n" .. text:sub(-400))
 end)
 
-case("register() twice does not build a recursive confirm chain", function()
+it("register() twice does not build a recursive confirm chain", function()
   _G.TS.calls, _G.TS.mode, _G.TS.ping = 0, "quiet", 0
   require("straps_classifier.entries").register()
   install_stub()
@@ -148,7 +137,7 @@ case("register() twice does not build a recursive confirm chain", function()
   assert(not text:find("stack overflow", 1, true), "the chain recursed:\n" .. text:sub(-400))
 end)
 
-case("a hazardous verdict blocks the call", function()
+it("a hazardous verdict blocks the call", function()
   _G.TS.calls, _G.TS.mode, _G.TS.ping = 0, "hazard", 0
   local b = state.new_session()
   local text = run_one(b, "ping", {})
@@ -157,7 +146,7 @@ case("a hazardous verdict blocks the call", function()
   assert(text:find("=0.97", 1, true), "the reason should carry the probability:\n" .. text:sub(-400))
 end)
 
-case("a backend error blocks the call", function()
+it("a backend error blocks the call", function()
   _G.TS.calls, _G.TS.mode, _G.TS.ping = 0, "error", 0
   local b = state.new_session()
   local text = run_one(b, "ping", {})
@@ -165,7 +154,7 @@ case("a backend error blocks the call", function()
   assert(text:find("HTTP 500", 1, true), "the cause should be reported:\n" .. text:sub(-400))
 end)
 
-case("a timeout blocks the call", function()
+it("a timeout blocks the call", function()
   _G.TS.calls, _G.TS.mode, _G.TS.ping = 0, "timeout", 0
   local b = state.new_session()
   local text = run_one(b, "ping", {})
@@ -173,7 +162,7 @@ case("a timeout blocks the call", function()
   assert(text:find("timeout after", 1, true), "the cause should be reported:\n" .. text:sub(-400))
 end)
 
-case("the direct call path has no ctx and is denied", function()
+it("the direct call path has no ctx and is denied", function()
   _G.TS.calls, _G.TS.mode, _G.TS.ping = 0, "quiet", 0
   local ok, err = pcall(registry.call, "tool.ping", {}, nil)
   assert(not ok, "a direct tool call must be refused")
@@ -183,7 +172,7 @@ case("the direct call path has no ctx and is denied", function()
   assert((_G.TS.ping or 0) == 0, "the tool must not have run")
 end)
 
-case("a local rule denies with no request at all", function()
+it("a local rule denies with no request at all", function()
   _G.TS.calls, _G.TS.mode = 0, "quiet"
   registry.define({
     name = "tool.fakebash", kind = "tool", doc = "test",
@@ -196,7 +185,7 @@ case("a local rule denies with no request at all", function()
   assert(_G.TS.calls == 0, "a local denial must cost no request")
 end)
 
-case("an over-cap program input is denied without a request", function()
+it("an over-cap program input is denied without a request", function()
   _G.TS.calls, _G.TS.mode = 0, "quiet"
   registry.define({
     name = "tool.fakebash", kind = "tool", doc = "test", capability = "exec",
@@ -240,7 +229,7 @@ local function sent_kind(payload)
   return "mixed"
 end
 
-case("the builtin ask_user gets the ask battery through the gate", function()
+it("the builtin ask_user gets the ask battery through the gate", function()
   assert(questions.ask_user_source ~= nil, "register() should snapshot the builtin")
   local b = state.new_session()
   local action, _, payload = gate_ask(b, ASK)
@@ -256,7 +245,7 @@ case("the builtin ask_user gets the ask battery through the gate", function()
   assert(payload.state.options["2"] == ASK.options[2], "options are sent numbered")
 end)
 
-case("a session shadow of ask_user gets the hazard battery", function()
+it("a session shadow of ask_user gets the hazard battery", function()
   local b = state.new_session()
   registry.define({
     name = "tool.ask_user", kind = "tool", doc = "shadow",
@@ -269,7 +258,7 @@ case("a session shadow of ask_user gets the hazard battery", function()
   assert(sent_kind(payload2) == "ask", "another session still sees the builtin")
 end)
 
-case("a session shadow with the builtin's exact source still gets the hazard battery", function()
+it("a session shadow with the builtin's exact source still gets the hazard battery", function()
   local saved = registry.get("tool.ask_user")
   local b = state.new_session()
   registry.define({
@@ -280,7 +269,7 @@ case("a session shadow with the builtin's exact source still gets the hazard bat
   assert(sent_kind(payload) == "hazard", "only the global builtin at version 1 is trusted")
 end)
 
-case("a global redefinition of ask_user gets the hazard battery", function()
+it("a global redefinition of ask_user gets the hazard battery", function()
   local saved = registry.get("tool.ask_user")
   registry.define({
     name = "tool.ask_user", kind = "tool", doc = "redefined",
@@ -298,7 +287,7 @@ case("a global redefinition of ask_user gets the hazard battery", function()
   assert(sent_kind(payload2) == "ask", "the restored builtin gets the ask battery again")
 end)
 
-case("a remove-then-define with new source gets the hazard battery", function()
+it("a remove-then-define with new source gets the hazard battery", function()
   local saved = registry.get("tool.ask_user")
   registry.remove("tool.ask_user", { scope = "global" })
   registry.define({
@@ -314,7 +303,7 @@ case("a remove-then-define with new source gets the hazard battery", function()
   assert(sent_kind(payload) == "hazard", "a version-1 impostor must get the command battery")
 end)
 
-case("an ask_user input outside the builtin's fields is denied with no request", function()
+it("an ask_user input outside the builtin's fields is denied with no request", function()
   local b = state.new_session()
   for _, input in ipairs({
     { question = "q", command = "echo hi" },
@@ -329,7 +318,7 @@ case("an ask_user input outside the builtin's fields is denied with no request",
   end
 end)
 
-case("an ask deny names the question and its fix", function()
+it("an ask deny names the question and its fix", function()
   local b = state.new_session()
   _G.TS.mode = "hazard"
   local ctx = {
@@ -347,11 +336,9 @@ case("an ask deny names the question and its fix", function()
   assert(reason:find(questions.fix("vague_option"), 1, true), "reason should carry its fix: " .. reason)
 end)
 
-case("every classification is recorded", function()
+it("every classification is recorded", function()
   local total = select(1, audit.counts())
   assert(total.deny >= 4, "denies should be recorded, got " .. total.deny)
   assert(total.allow >= 1, "allows should be recorded, got " .. total.allow)
 end)
 
-print(failed and "FAILED" or "ALL PASS")
-os.exit(failed and 1 or 0)
