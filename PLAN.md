@@ -198,8 +198,11 @@ alone (`viable` and `deciding_factor` are lower bounds, so the code checks them
 for the disable case rather than letting a value above 1 force the verdict). Steps 3-5 are skipped when the ask threshold is above 1, so watch mode
 stops them too. The rules below apply to every other kind.
 
-- Any hazard at or above `deny_threshold` (default 0.85): `deny`.
-- `runs_script_outside_root` at or above `deny_threshold` when
+- Any hazard at or above its cutoff: `deny`. `policy.cutoffs(cfg)` gives every
+  command-battery noul a cutoff: `config.cutoffs[id]` if set, else
+  `deny_threshold` (default 0.85); above 1 disables that hazard alone. The
+  hazard furthest over its own cutoff names the reason.
+- `runs_script_outside_root` at or above its cutoff when
   `config.opaque_action` is `"deny"` (default): `deny`. When `"log"`, the reason
   records it but the call proceeds.
 - `damage` at or above `damage_deny` (default 2.5): `deny`.
@@ -354,6 +357,7 @@ require("straps_classifier").setup({
   deny_threshold = 0.85,
   damage_deny = 2.5,
   opaque_action = "deny",
+  cutoffs = nil,
   ask_deny_threshold = nil,
   ask_cutoffs = nil,
   ask_cutoffs = nil,
@@ -404,7 +408,7 @@ Self-contained files run as `nvim --headless -l tests/run_X.lua`
 
 | File | What it proves | Network |
 | --- | --- | --- |
-| `run_policy.lua` | every hazard threshold, the opaque signal denying or logging by `opaque_action`, `redefines_protected` skipped for edit tools, damage escalation with no confidence downgrade, a mismatched legend denying, missing answers denying, over-cap and path-resolution state building; the ask battery: each hazard at its cutoff denies with its fix and the right prefix (do-not-ask without the rework suffix), a missing, NaN, or out-of-range answer denies, no damage needed, an unknown kind routes as hazard, `ask_deny_threshold` and its fallback, the battery shape (10 with fewer than two options, 20 with three), unelided ask state, and the `ask_user` field check; Hobson's, stacked-deck (naming the disfavored options) and unsupported-recommendation verdicts with their reasons and cutoff edges, honest steering passing, the verdict order, malformed fixed and per-option signals denying for every option count, watch mode, `ask_cutoffs` for code verdicts and per-hazard cutoffs | none |
+| `run_policy.lua` | every hazard threshold, per-hazard `cutoffs` (one relaxed, one tightened, the signal, the edit skip kept), the opaque signal denying or logging by `opaque_action`, `redefines_protected` skipped for edit tools, damage escalation with no confidence downgrade, a mismatched legend denying, missing answers denying, over-cap and path-resolution state building; the ask battery: each hazard at its cutoff denies with its fix and the right prefix (do-not-ask without the rework suffix), a missing, NaN, or out-of-range answer denies, no damage needed, an unknown kind routes as hazard, `ask_deny_threshold` and its fallback, the battery shape (10 with fewer than two options, 20 with three), unelided ask state, and the `ask_user` field check; Hobson's, stacked-deck (naming the disfavored options) and unsupported-recommendation verdicts with their reasons and cutoff edges, honest steering passing, the verdict order, malformed fixed and per-option signals denying for every option count, watch mode, `ask_cutoffs` for code verdicts and per-hazard cutoffs | none |
 | `run_local_rules.lua` | deny patterns fire with no key and no `ctx`, against command-like fields only and never prose | none |
 | `run_guard.lua` | with a scripted `fn.typesafe`: a child session classifies and blocks; a parent's loop call leaves enforcement to the confirm; a direct `registry.call` with no `ctx` is denied with `no ctx to await on`; a local rule denies with no request; an over-cap program input denies with no request; a repeated call is classified again; through `gate_tool`, the builtin `ask_user` gets the ask battery while a session shadow (even with the builtin's source), a global redefinition, and a version-1 impostor get the command battery; an `ask_user` input outside the builtin's fields denies with no request | none |
 | `run_confirm.lua` | a rejected call makes no request; an approved call is classified; a deny blocks with the question named; a silent `cap:` grant still reaches the classifier; a timeout blocks; a missing key blocks; the slot is empty after the confirm reads it | none |

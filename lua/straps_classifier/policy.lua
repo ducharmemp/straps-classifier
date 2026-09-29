@@ -39,6 +39,18 @@ M.DO_NOT_ASK = { permission_seeking = true, already_answered = true }
 
 local REWORK = " Ask again with the reworked question."
 
+--- One cutoff per command-battery noul (the hazards and the signal), from
+--- cfg.cutoffs by id, else deny_threshold.
+function M.cutoffs(cfg)
+  local deny_at = cfg.deny_threshold or 0.85
+  local over = type(cfg.cutoffs) == "table" and cfg.cutoffs or {}
+  local cut = {}
+  for _, id in ipairs(questions.ids()) do
+    cut[id] = tonumber(over[id]) or deny_at
+  end
+  return cut, deny_at
+end
+
 --- Every ask cutoff a config may set, with its effective default: the code
 --- verdict cutoffs above, plus one per fixed hazard, which defaults to the
 --- ask deny threshold.
@@ -262,12 +274,12 @@ end
 --- action is "deny" or "ok". reason is human text naming what decided it.
 ---
 --- kind "ask" routes the rigged-choice battery (see route_ask). Any other kind
---- routes the command hazards: deny when any hazard noul reaches
---- deny_threshold, or the signal runs_script_outside_root reaches it while
---- opaque_action is "deny", or damage reaches damage_deny, or the returned
---- damage legend is not the one we asked with. Missing or malformed answers
---- deny. labels (ask only) are the option labels the per-option signals
---- were built for.
+--- routes the command hazards: deny when any hazard noul reaches its cutoff
+--- (cfg.cutoffs[id], else deny_threshold; above 1 disables that hazard), or
+--- the signal runs_script_outside_root reaches its cutoff while opaque_action
+--- is "deny", or damage reaches damage_deny, or the returned damage legend is
+--- not the one we asked with. Missing or malformed answers deny. labels (ask
+--- only) are the option labels the per-option signals were built for.
 function M.route(answers, cfg, capability, kind, labels)
   if type(answers) ~= "table" then
     return "deny", "no answers returned"
@@ -276,7 +288,6 @@ function M.route(answers, cfg, capability, kind, labels)
     return route_ask(answers, cfg, labels)
   end
 
-  local deny_at = cfg.deny_threshold or 0.85
   local damage_at = cfg.damage_deny or 2.5
   local opaque_action = cfg.opaque_action or "deny"
 
@@ -307,29 +318,23 @@ function M.route(answers, cfg, capability, kind, labels)
     end
   end
 
-  -- Highest hazard first, so the reason names the strongest signal.
-  local top_id, top_p = nil, -1
-  for _, id in ipairs(questions.ids("hazard")) do
-    if not skipped(id, capability) then
-      local p = answers[id].noul
-      if p > top_p then
-        top_id, top_p = id, p
-      end
-    end
-  end
-
-  if top_p >= deny_at then
-    return "deny", ("%s=%s (>= %s)"):format(top_id, pct(top_p), pct(deny_at))
+  local cut = M.cutoffs(cfg)
+  local hazards = questions.ids("hazard")
+  local over = over_cutoff(answers, hazards, cut, function(id) return not skipped(id, capability) end)
+  if over then
+    return "deny", ("%s=%s (>= %s)"):format(over, pct(answers[over].noul), pct(cut[over]))
   end
 
   local opaque = answers.runs_script_outside_root.noul
   local note = ""
-  if opaque >= deny_at then
+  if opaque >= cut.runs_script_outside_root then
     if opaque_action == "deny" then
-      return "deny", ("opaque: runs_script_outside_root=%s (>= %s)"):format(pct(opaque), pct(deny_at))
+      return "deny", ("opaque: runs_script_outside_root=%s (>= %s)"):format(pct(opaque), pct(cut.runs_script_outside_root))
     end
     note = ("; opaque runs_script_outside_root=%s logged"):format(pct(opaque))
   end
+
+  local top_id, top_p = strongest(answers, hazards, function(id) return not skipped(id, capability) end)
 
   if damage.score >= damage_at then
     return "deny", ("damage=%s (>= %s)"):format(pct(damage.score), pct(damage_at))

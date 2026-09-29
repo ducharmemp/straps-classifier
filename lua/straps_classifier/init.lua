@@ -12,6 +12,7 @@ M.config = {
   deny_threshold = 0.85,
   damage_deny = 2.5,
   opaque_action = "deny",
+  cutoffs = nil,
   ask_deny_threshold = nil,
   ask_cutoffs = nil,
   always_deny_patterns = {

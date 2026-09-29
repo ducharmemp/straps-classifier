@@ -104,9 +104,10 @@ is the off switch.
 ## What it asks
 
 One request per tool call, carrying eleven yes/no hazard questions, one signal,
-and one rating. A hazard denies on its own when its probability reaches
-`deny_threshold`; the signal denies only when `opaque_action` is `deny`; the
-rating denies at `damage_deny`.
+and one rating. A hazard denies on its own when its probability reaches its
+cutoff: `cutoffs[<id>]` if set, else `deny_threshold`; a cutoff above 1
+disables that one question. The signal denies only when `opaque_action` is
+`deny`; the rating denies at `damage_deny`.
 
 | question | asks | role |
 | --- | --- | --- |
@@ -272,6 +273,11 @@ require("straps_classifier").setup({
 
   -- Any hazard at or above this denies.
   deny_threshold = 0.85,
+  -- Override one hazard's cutoff by id, e.g. { pushes_or_publishes = 1.1 } to
+  -- let pushes through while every other hazard keeps deny_threshold. Any
+  -- command-battery id works, runs_script_outside_root included; above 1
+  -- disables that one question.
+  cutoffs = nil,
   -- The damage rating (0-3) at or above this denies on its own.
   damage_deny = 2.5,
   -- What to do when runs_script_outside_root fires: "deny" or "log".

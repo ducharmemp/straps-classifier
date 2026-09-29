@@ -170,6 +170,38 @@ case("unreachable thresholds let nothing deny", function()
   assert(action == "ok", "1.1 is unreachable for every probability, signal included: " .. reason)
 end)
 
+case("cutoffs override one command hazard at a time", function()
+  local cut, deny_at = policy.cutoffs(CFG)
+  assert(deny_at == 0.85, "threshold from deny_threshold")
+  for _, id in ipairs(questions.ids()) do
+    assert(cut[id] == 0.85, id .. " defaults to deny_threshold")
+  end
+  local a = answers(0.05, 0.1)
+  a.pushes_or_publishes.noul = 0.96
+  assert(policy.route(a, CFG) == "deny", "0.96 denies at the default")
+  local relaxed = vim.tbl_extend("force", CFG, { cutoffs = { pushes_or_publishes = 1.1 } })
+  local action, reason = policy.route(a, relaxed)
+  assert(action == "ok", "a cutoff above 1 disables that hazard alone: " .. reason)
+  a.writes_outside_root.noul = 0.9
+  local action2, reason2 = policy.route(a, relaxed)
+  assert(action2 == "deny" and reason2:find("writes_outside_root=0.90", 1, true), "other hazards keep the threshold: " .. reason2)
+  local tight = vim.tbl_extend("force", CFG, { cutoffs = { sends_message = 0.3 } })
+  local b = answers(0.05, 0.1)
+  b.sends_message.noul = 0.35
+  b.reads_credentials.noul = 0.8
+  local action3, reason3 = policy.route(b, tight)
+  assert(action3 == "deny" and reason3:find("sends_message=0.35 (>= 0.30)", 1, true),
+    "the hazard furthest over its own cutoff decides: " .. reason3)
+  local c = answers(0.05, 0.1)
+  c.runs_script_outside_root.noul = 0.9
+  local off = vim.tbl_extend("force", CFG, { cutoffs = { runs_script_outside_root = 1.1 } })
+  assert(policy.route(c, off) == "ok", "the signal has a cutoff too")
+  local edit = answers(0.05, 0.1)
+  edit.redefines_protected.noul = 0.99
+  assert(policy.route(edit, vim.tbl_extend("force", CFG, { cutoffs = { redefines_protected = 0.1 } }), "edit") == "ok",
+    "a cutoff does not un-skip redefines_protected for edit tools")
+end)
+
 case("the battery has the documented shape", function()
   assert(#questions.DAMAGE_LEVELS == 4, "want 4 levels")
   local hazards = questions.ids("hazard")
