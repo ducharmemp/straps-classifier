@@ -33,7 +33,10 @@ M.ASK_CUTOFFS = {
   fairness = 2.0,
   marked_recommended = 0.7,
   deciding_factor = 0.5,
+  unstated_steer = 0.75,
 }
+
+local DEFAULT_MARK = M.ASK_CUTOFFS.marked_recommended
 
 M.DO_NOT_ASK = { permission_seeking = true, already_answered = true }
 
@@ -205,6 +208,27 @@ local function stacked(answers, labels, cut)
     :format(favored, pct(steer.confidence), table.concat(fired, ", "), favored, short(labels[favored]), fix)
 end
 
+local function unstated(answers, labels, cut)
+  if cut.unstated_steer > 1 then
+    return nil
+  end
+  local steer = answers.steer
+  local favored = tonumber(steer.choice)
+  if not favored or not labels[favored] or steer.confidence < cut.unstated_steer then
+    return nil
+  end
+  local mark_at = cut.marked_recommended <= 1 and cut.marked_recommended or DEFAULT_MARK
+  local marked = answers.marked_recommended.noul
+  if marked >= mark_at then
+    return nil
+  end
+  return ("unstated recommendation (steer=option %d at %s, marked_recommended=%s): the options"
+    .. " push toward option %d %s without saying so. Either mark it recommended and state the"
+    .. " deciding factor that separates it from the others, or give every option its benefits"
+    .. " and its costs at comparable detail." .. REWORK)
+    :format(favored, pct(steer.confidence), pct(marked), favored, short(labels[favored]))
+end
+
 local function strongest(answers, ids, pick)
   local top_id, top_p = nil, -1
   for _, id in ipairs(ids) do
@@ -253,7 +277,7 @@ local function route_ask(answers, cfg, labels)
   if deny_at <= 1 then
     local reason
     if n >= 2 then
-      reason = hobsons(answers, labels, cut) or stacked(answers, labels, cut)
+      reason = hobsons(answers, labels, cut) or stacked(answers, labels, cut) or unstated(answers, labels, cut)
     end
     reason = reason or unsupported(answers, cut)
     if reason then

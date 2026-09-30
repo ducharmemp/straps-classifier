@@ -244,6 +244,23 @@ it("state resolves structured paths against the root", function()
   assert(s2.resolved_paths["/etc/hosts"].within == "outside", "/etc is outside")
 end)
 
+it("dependency_roots lists the sibling straps checkout alongside STRAPS_ROOT", function()
+  local root = vim.fn.getcwd()
+  local sibling = vim.fn.fnamemodify(root, ":h") .. "/straps"
+  local saved = vim.env.STRAPS_ROOT
+  vim.env.STRAPS_ROOT = "/nix/store/abc-source"
+  local deps = questions.dependency_roots(root)
+  vim.env.STRAPS_ROOT = saved
+  assert(deps[1] == "STRAPS_ROOT=/nix/store/abc-source", "STRAPS_ROOT leads: " .. vim.inspect(deps))
+  assert(deps[#deps] == "/nix/store", "/nix/store last")
+  local has_sibling = vim.tbl_contains(deps, sibling)
+  assert(has_sibling == (vim.fn.isdirectory(sibling) == 1), "the sibling is listed iff it exists: " .. vim.inspect(deps))
+  vim.env.STRAPS_ROOT = sibling
+  local same = questions.dependency_roots(root)
+  vim.env.STRAPS_ROOT = saved
+  assert(same[1] == "STRAPS_ROOT=" .. sibling and same[2] == "/nix/store", "no duplicate when STRAPS_ROOT is the sibling: " .. vim.inspect(same))
+end)
+
 local function ask_answers(p, over)
   local out = {}
   for _, id in ipairs(questions.ids("hazard", "ask")) do
@@ -435,7 +452,7 @@ it("a stacked deck names the options described only to lose", function()
   local _, r = policy.route(fav, CFG, "read", "ask", LABELS)
   assert(not r:find("described only to lose", 1, true), "the favored option and sub-cutoff options are not named: " .. r)
   assert(r:find("Give every option both its benefits", 1, true), "generic fix when no loser is named: " .. r)
-  local quiet = signal_answers(0.05, { steer = STEER1, disfavored_2 = 0.95 })
+  local quiet = signal_answers(0.05, { steer = { choice = "1", confidence = 0.74 }, disfavored_2 = 0.95 })
   assert(policy.route(quiet, CFG, "read", "ask", LABELS) == "ok", "disfavored alone never denies")
 end)
 
@@ -472,15 +489,48 @@ it("a stacked deck denies when steering is unearned", function()
 end)
 
 it("honest steering passes", function()
-  local honest = signal_answers(0.05, { steer = { choice = "1", confidence = 0.95 }, fairness = { score = 1.9 } })
-  assert(policy.route(honest, CFG, "read", "ask", LABELS) == "ok", "steer alone must not deny")
+  local honest = signal_answers(0.05, { steer = { choice = "1", confidence = 0.95 }, fairness = { score = 1.9 },
+    marked_recommended = 0.95 })
+  assert(policy.route(honest, CFG, "read", "ask", LABELS) == "ok", "a marked, supported steer must not deny")
   local unsure = signal_answers(0.05, { steer = { choice = "1", confidence = 0.59 }, asymmetric_detail = 0.95 })
   assert(policy.route(unsure, CFG, "read", "ask", LABELS) == "ok", "steer confidence under 0.6 does not count")
   local even = signal_answers(0.05, { steer = { choice = "none", confidence = 0.99 }, asymmetric_detail = 0.95 })
   assert(policy.route(even, CFG, "read", "ask", LABELS) == "ok", "steer none never stacks")
+  local even_unmarked = signal_answers(0.05, { steer = { choice = "none", confidence = 0.99 } })
+  assert(policy.route(even_unmarked, CFG, "read", "ask", LABELS) == "ok", "steer none is never an unstated recommendation")
 end)
 
-it("verdict order: do-not-ask, Hobson's, stacked, unsupported, fixed hazard", function()
+it("an unstated recommendation denies when a strong steer carries no mark", function()
+  local a = signal_answers(0.05, { steer = { choice = "2", confidence = 0.75 } })
+  local action, reason = policy.route(a, CFG, "read", "ask", LABELS)
+  assert(action == "deny", "want deny: " .. reason)
+  assert(reason:sub(1, 25) == "unstated recommendation (", "reason starts with the verdict: " .. reason)
+  assert(reason:find('steer=option 2 at 0.75, marked_recommended=0.05', 1, true), "reason carries the scores: " .. reason)
+  assert(reason:find('push toward option 2 "Rewrite in Rust" without saying so', 1, true), "reason names the option: " .. reason)
+  assert(reason:find("mark it recommended and state the deciding factor", 1, true), "reason offers the mark route: " .. reason)
+  assert(reason:find("give every option its benefits and its costs", 1, true), "reason offers the balance route: " .. reason)
+  assert(reason:find("Ask again with the reworked question.", 1, true), "rework suffix: " .. reason)
+  local under = signal_answers(0.05, { steer = { choice = "2", confidence = 0.74 } })
+  assert(policy.route(under, CFG, "read", "ask", LABELS) == "ok", "0.74 is under the 0.75 cutoff")
+  local marked = signal_answers(0.05, { steer = { choice = "2", confidence = 0.95 }, marked_recommended = 0.7 })
+  assert(policy.route(marked, CFG, "read", "ask", LABELS) == "ok", "a marked, supported recommendation is not unstated")
+  local marked_unsupported = signal_answers(0.05, { steer = { choice = "2", confidence = 0.95 },
+    marked_recommended = 0.7, states_deciding_factor = 0.1 })
+  local _, r = policy.route(marked_unsupported, CFG, "read", "ask", LABELS)
+  assert(r:sub(1, 28) == "unsupported recommendation (", "a marked steer is unsupported, never unstated: " .. r)
+  local off = { deny_threshold = 0.85, ask_cutoffs = { unstated_steer = 1.1 } }
+  assert(policy.route(a, off, "read", "ask", LABELS) == "ok", "unstated_steer above 1 disables the verdict")
+  local mark_off = { deny_threshold = 0.85, ask_cutoffs = { marked_recommended = 1.1 } }
+  local action2, r2 = policy.route(a, mark_off, "read", "ask", LABELS)
+  assert(action2 == "deny" and r2:sub(1, 25) == "unstated recommendation (",
+    "disabling the unsupported verdict keeps the default mark cutoff for unstated: " .. r2)
+  assert(policy.route(marked, mark_off, "read", "ask", LABELS) == "ok",
+    "a mark at the default cutoff still exempts the steer when marked_recommended is disabled")
+  local one = ask_answers(0.05)
+  assert(policy.route(one, CFG, "read", "ask", { "only" }) == "ok", "one option has no steer to be unstated")
+end)
+
+it("verdict order: do-not-ask, Hobson's, stacked, unstated, unsupported, fixed hazard", function()
   local all = { viable_2 = 0.07, viable_3 = 0.16, steer = STEER1,
     asymmetric_detail = 0.95, marked_recommended = 0.95, states_deciding_factor = 0.1, vague_option = 0.99 }
   local function first(over)
@@ -493,9 +543,11 @@ it("verdict order: do-not-ask, Hobson's, stacked, unsupported, fixed hazard", fu
   local no_hob = vim.tbl_extend("force", all, { viable_2 = 0.9, viable_3 = 0.9 })
   assert(first(no_hob):sub(1, 14) == "stacked deck (", "stacked next: " .. first(no_hob))
   local no_stack = vim.tbl_extend("force", no_hob, { asymmetric_detail = 0.1 })
-  assert(first(no_stack):sub(1, 28) == "unsupported recommendation (", "unsupported next: " .. first(no_stack))
-  local no_unsup = vim.tbl_extend("force", no_stack, { marked_recommended = 0.1 })
-  assert(first(no_unsup):sub(1, 23) == "question needs rework (", "fixed hazard last: " .. first(no_unsup))
+  assert(first(no_stack):sub(1, 28) == "unsupported recommendation (", "unsupported when marked: " .. first(no_stack))
+  local unmarked = vim.tbl_extend("force", no_stack, { marked_recommended = 0.1 })
+  assert(first(unmarked):sub(1, 25) == "unstated recommendation (", "unstated when unmarked: " .. first(unmarked))
+  local no_steer = vim.tbl_extend("force", unmarked, { steer = { choice = "none", confidence = 0.9 } })
+  assert(first(no_steer):sub(1, 23) == "question needs rework (", "fixed hazard last: " .. first(no_steer))
 end)
 
 it("missing or malformed signals deny, for every option count", function()

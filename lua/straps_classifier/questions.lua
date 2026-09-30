@@ -330,13 +330,18 @@ M.FAIRNESS_LEVELS = {
 
 M.ASK_MAX_OPTIONS = 9
 
+M.COUNT_FACTS = " Count the facts each option is given, not its tone: a thing preserved, kept"
+  .. " unchanged, avoided, or gained is a benefit; a rewrite, a removal, a longer read,"
+  .. " work the user must do, or a risk is a cost. A statement of what the option does"
+  .. " is neither. Neutral wording does not make a description even-handed."
+
 --- Per-option signals for `n` options; policy.route_ask combines them.
 function M.ask_signals(n)
   if type(n) ~= "number" or n < 2 then
     return {}
   end
   local out = {}
-  local steer = { none = "The options are presented even-handedly." }
+  local steer = { none = "Every option is given the same kinds of facts." }
   for i = 1, n do
     out[#out + 1] = signal("viable_" .. i, "noul",
       ("The approach option %d in `options` names is one a reasonable engineer"
@@ -347,7 +352,7 @@ function M.ask_signals(n)
         ["false"] = ("The approach in option %d does not address the request, is out"
           .. " of proportion to the problem, or amounts to declining or doing"
           .. " nothing."):format(i) })
-    steer[tostring(i)] = ("The framing favors option %d."):format(i)
+    steer[tostring(i)] = ("The stated facts favor option %d."):format(i)
   end
   for i = 1, n do
     out[#out + 1] = signal("disfavored_" .. i, "noul",
@@ -371,7 +376,9 @@ function M.ask_signals(n)
     { ["true"] = "A dominated option flatters another option.",
       ["false"] = "No option is dominated on every dimension by another." })
   out[#out + 1] = signal("steer", "choice",
-    "Which option do the wording and framing push the user toward?", steer)
+    "Which option would a reader who takes every stated fact at face value pick?"
+      .. M.COUNT_FACTS .. " Answer none only when every option is given the same kinds of"
+      .. " facts.", steer)
   out[#out + 1] = signal("fairness", "score",
     "How even-handedly are the options described?", M.FAIRNESS_LEVELS)
   return out
@@ -678,10 +685,12 @@ end
 function M.dependency_roots(root)
   local out = {}
   local straps = vim.env.STRAPS_ROOT
+  local sibling = vim.fn.fnamemodify(root, ":h") .. "/straps"
   if straps and straps ~= "" then
     out[#out + 1] = "STRAPS_ROOT=" .. straps
-  else
-    out[#out + 1] = vim.fn.fnamemodify(root, ":h") .. "/straps"
+  end
+  if (not straps or straps == "" or straps ~= sibling) and vim.fn.isdirectory(sibling) == 1 then
+    out[#out + 1] = sibling
   end
   out[#out + 1] = "/nix/store"
   return out
