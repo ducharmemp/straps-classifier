@@ -18,6 +18,16 @@ it("a matching command denies", function()
   assert(reason:find("local rule", 1, true), "reason should say so: " .. tostring(reason))
 end)
 
+it("a labelled rule names its label instead of the pattern", function()
+  local cfg = { always_deny_patterns = { { pattern = "rm%s+%-rf%s+/", label = "recursive delete of /" }, "^sudo%s" } }
+  local _, reason = rules.check("bash", { command = "rm -rf /" }, cfg)
+  assert(reason == 'local rule "recursive delete of /" matched "rm -rf /"', tostring(reason))
+  local _, plain = rules.check("bash", { command = "sudo ls" }, cfg)
+  assert(plain == 'local rule "^sudo%s" matched "sudo ls"', tostring(plain))
+  local _, nolabel = rules.check("bash", { command = "rm -rf /" }, { always_deny_patterns = { { pattern = "rm%s" } } })
+  assert(nolabel == 'local rule "rm%s" matched "rm -rf /"', tostring(nolabel))
+end)
+
 it("an ordinary command passes", function()
   local action = rules.check("bash", { command = "ls -la" }, CFG)
   assert(action == nil, "ls should not match")

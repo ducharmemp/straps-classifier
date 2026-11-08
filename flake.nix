@@ -1,15 +1,9 @@
 {
-  description = "straps-classifier — every tool call rated by TypeSafe's Jev, after you approve it";
+  description = "straps-classifier — tool calls rated before confirmation; scoped denials enforced by the guard";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    # REQUIRES the "Classifier-compatible hooks" commit or later: this plugin
-    # uses registry.bind, the hook.guard.* chain, and fn.capability, none of
-    # which exist in straps before it. As of writing, that commit is on Matt's
-    # local main and NOT pushed, so this input resolves to an older revision
-    # and `nix flake check` fails with "attempt to call field 'bind'". Push
-    # straps, then `nix flake update straps`.
-    straps.url = "git+ssh://git@github.com/ducharmemp/straps";
+    straps.url = "git+https://github.com/ducharmemp/straps";
     straps.inputs.nixpkgs.follows = "nixpkgs";
   };
 

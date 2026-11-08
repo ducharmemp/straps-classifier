@@ -36,19 +36,27 @@ local function strings_in(value, out, depth)
 end
 
 --- check(name, input, cfg) -> "deny", reason | nil
---- Lua patterns, matched case-sensitively against each command-like string in
---- the input.
+--- Each rule is a Lua pattern string, or { pattern = "...", label = "..." }.
+--- Patterns match case-sensitively against each command-like string in the
+--- input; the reason names the label when the rule has one.
 function M.check(name, input, cfg)
   local patterns = cfg.always_deny_patterns
   if type(patterns) ~= "table" or #patterns == 0 then
     return nil
   end
   local haystack = strings_in(input, { tostring(name) })
-  for _, pattern in ipairs(patterns) do
-    for _, text in ipairs(haystack) do
-      local ok, found = pcall(string.find, text, pattern)
-      if ok and found then
-        return "deny", ("local rule %q matched %q"):format(pattern, text:sub(1, 120))
+  for _, rule in ipairs(patterns) do
+    local pattern, label = rule, nil
+    if type(rule) == "table" then
+      pattern, label = rule.pattern or rule[1], rule.label
+    end
+    if type(pattern) == "string" then
+      for _, text in ipairs(haystack) do
+        local ok, found = pcall(string.find, text, pattern)
+        if ok and found then
+          local shown = type(label) == "string" and label ~= "" and label or pattern
+          return "deny", ("local rule %q matched %q"):format(shown, text:sub(1, 120))
+        end
       end
     end
   end

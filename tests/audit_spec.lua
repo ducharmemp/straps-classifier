@@ -212,10 +212,151 @@ it("clearing one session leaves the others", function()
   assert(#all == 1 and all[1].key == b, "only the cleared session should go")
 end)
 
-it("audit_limit below 1 is refused by setup", function()
-  local ok, err = pcall(plugin.setup, { audit_limit = 0 })
-  assert(not ok, "audit_limit = 0 must be refused")
-  assert(tostring(err):find("audit_limit", 1, true), "the error should name it: " .. tostring(err))
+local function capture_notify(fn)
+  local seen = {}
+  local orig = vim.notify
+  vim.notify = function(msg, level) seen[#seen + 1] = { msg = msg, level = level } end
+  local ok, err = pcall(fn)
+  vim.notify = orig
+  assert(ok, tostring(err))
+  return seen
+end
+
+it("audit_limit below 1 is refused by setup with an ERROR notify and ignored", function()
+  local seen = capture_notify(function() plugin.setup({ audit_limit = 0 }) end)
+  local hit
+  for _, n in ipairs(seen) do
+    if n.msg:find("audit_limit", 1, true) then hit = n end
+  end
+  assert(hit, "setup should notify about audit_limit: " .. vim.inspect(seen))
+  assert(hit.msg:find("^straps_classifier: audit_limit must be at least 1"), "prefix and wording: " .. hit.msg)
+  assert(hit.level == vim.log.levels.ERROR, "level should be ERROR, got " .. tostring(hit.level))
+  assert(plugin.effective().audit_limit == 500, "the bad value is ignored, got " .. tostring(plugin.effective().audit_limit))
+end)
+
+it("setup keeps a user's fn.classifier_audit and fn.typesafe_api_key redefinitions", function()
+  registry.define({ name = "fn.classifier_audit", kind = "fn", doc = "user sink",
+    source = "return function(b, rec) _G.USER_SINK = rec.tool; return rec end" }, { scope = "global" })
+  registry.define({ name = "fn.classifier_audit_render", kind = "fn", doc = "user render",
+    source = "return function() _G.USER_RENDER = true end" }, { scope = "global" })
+  registry.define({ name = "fn.typesafe_api_key", kind = "fn", doc = "user key",
+    source = "return function() return 'user-key' end" }, { scope = "global" })
+  local before = registry.get("fn.typesafe").version
+  require("straps_classifier.entries").register()
+  assert(registry.get("fn.classifier_audit").doc == "user sink", "the audit sink must survive register()")
+  assert(registry.get("fn.classifier_audit_render").doc == "user render", "the render fn must survive register()")
+  assert(registry.call("fn.typesafe_api_key") == "user-key", "the key fn must survive register()")
+  assert(registry.get("fn.typesafe").version == before + 1, "fn.typesafe is always redefined")
+  registry.call("fn.classifier_audit", 0, { tool = "sinked" })
+  assert(_G.USER_SINK == "sinked", "the user sink should receive records")
+  registry.define({ name = "fn.classifier_audit", kind = "fn", doc = "restore",
+    source = "return function(b, rec) return require('straps_classifier.audit').record(b, rec) end" },
+    { scope = "global" })
+  registry.define({ name = "fn.classifier_audit_render", kind = "fn", doc = "restore",
+    source = "return function(b) return require('straps_classifier.audit').render(b) end" }, { scope = "global" })
+end)
+
+it("status without setup says tool calls are not classified", function()
+  package.loaded["straps_classifier"] = nil
+  local fresh = require("straps_classifier")
+  local lines, level, s = fresh.status_report()
+  assert(s.setup_ran == false, "setup_ran should be false")
+  assert(lines[1] == "straps_classifier: setup() has not run; tool calls are NOT classified", lines[1])
+  assert(level == vim.log.levels.WARN, "level should be WARN")
+  package.loaded["straps_classifier"] = plugin
+end)
+
+it("status carries the key error and warns", function()
+  registry.define({ name = "fn.typesafe_api_key", kind = "fn", doc = "no key",
+    source = "return function() error('straps_classifier: no TypeSafe API key. test reason', 0) end" },
+    { scope = "global" })
+  plugin.setup_ran, plugin.installed = true, true
+  local lines, level, s = plugin.status_report()
+  assert(s.api_key == false, "api_key should be false")
+  assert(s.api_key_error == "straps_classifier: no TypeSafe API key. test reason", tostring(s.api_key_error))
+  assert(table.concat(lines, "\n"):find("test reason", 1, true), "the reason should be in the report")
+  assert(level == vim.log.levels.WARN, "level should be WARN, got " .. tostring(level))
+  plugin.installed, plugin.install_error = false, "frozen"
+  local _, level2 = plugin.status_report()
+  assert(level2 == vim.log.levels.ERROR, "an install failure is ERROR")
+  registry.define({ name = "fn.typesafe_api_key", kind = "fn", doc = "key",
+    source = "return function() return 'k' end" }, { scope = "global" })
+  plugin.installed, plugin.install_error = true, nil
+  local _, level3 = plugin.status_report()
+  assert(level3 == vim.log.levels.INFO, "a working install is INFO")
+end)
+
+it(":StrapsClassifierStatus notifies at the report's level", function()
+  vim.g.loaded_straps_classifier = nil
+  vim.cmd("source " .. vim.fn.fnameescape(root .. "/plugin/straps_classifier.lua"))
+  plugin.installed, plugin.install_error = false, "frozen"
+  local seen = capture_notify(function() vim.cmd("StrapsClassifierStatus") end)
+  assert(#seen == 1 and seen[1].level == vim.log.levels.ERROR, vim.inspect(seen))
+  plugin.installed, plugin.install_error = true, nil
+end)
+
+it("checkhealth reports install, key and counts", function()
+  audit.clear()
+  audit.record(0, { tool = "a", action = "deny", reason = "x", failure = "timeout" })
+  vim.cmd("checkhealth straps_classifier")
+  local text = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+  assert(text:find("guard installed", 1, true), text)
+  assert(text:find("fn.typesafe_api_key resolves", 1, true), text)
+  assert(text:find("allows: 0, denies: 1", 1, true), text)
+  assert(text:find("failure timeout: 1", 1, true), text)
+  vim.cmd("bwipeout!")
+end)
+
+it("the record view reuses one named nofile window and the audit command reuses its window", function()
+  audit.clear()
+  local b = fresh_session()
+  audit.record(b, { tool = "one", action = "ok", reason = "q" })
+  audit.record(b, { tool = "two", action = "ok", reason = "q" })
+  local abuf = audit.open()
+  local wins = #vim.api.nvim_list_wins()
+  audit.open()
+  assert(#vim.api.nvim_list_wins() == wins, "a second open should focus the existing window")
+  audit.render(abuf)
+  local rows = {}
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(abuf, 0, -1, false)) do
+    if l:find("  ok  ", 1, true) then rows[#rows + 1] = i end
+  end
+  assert(#rows == 2, "two rows rendered")
+  vim.api.nvim_win_set_cursor(0, { rows[1], 0 })
+  audit._open_record()
+  local rec_buf = vim.api.nvim_get_current_buf()
+  assert(vim.api.nvim_buf_get_name(rec_buf):match("^straps://classifier/record/%d+$"), vim.api.nvim_buf_get_name(rec_buf))
+  assert(vim.bo[rec_buf].buftype == "nofile", "record buffer is nofile")
+  local after_first = #vim.api.nvim_list_wins()
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(abuf))
+  vim.api.nvim_win_set_cursor(0, { rows[2], 0 })
+  audit._open_record()
+  assert(#vim.api.nvim_list_wins() == after_first, "a second record reuses the record window")
+  assert(vim.api.nvim_get_current_buf() ~= rec_buf, "the second record shows a different buffer")
+end)
+
+it("x asks before clearing and notifies after", function()
+  audit.clear()
+  local b = fresh_session()
+  audit.record(b, { tool = "one", action = "ok", reason = "q" })
+  local abuf = audit.open()
+  audit.render(abuf)
+  local row
+  for i, l in ipairs(vim.api.nvim_buf_get_lines(abuf, 0, -1, false)) do
+    if l:find("  ok  ", 1, true) then row = i end
+  end
+  vim.api.nvim_set_current_win(vim.fn.bufwinid(abuf))
+  vim.api.nvim_win_set_cursor(0, { row, 0 })
+  local orig_confirm = vim.fn.confirm
+  vim.fn.confirm = function() return 2 end
+  local seen = capture_notify(function() audit._clear_at_cursor() end)
+  assert(#audit.all() == 1, "a No keeps the records")
+  assert(#seen == 0, "no notice on No")
+  vim.fn.confirm = function() return 1 end
+  seen = capture_notify(function() audit._clear_at_cursor() end)
+  vim.fn.confirm = orig_confirm
+  assert(#audit.all() == 0, "a Yes clears the records")
+  assert(#seen == 1 and seen[1].msg:find("^straps_classifier: cleared 1 records"), vim.inspect(seen))
 end)
 
 it("fn.classifier_audit records through the registry", function()

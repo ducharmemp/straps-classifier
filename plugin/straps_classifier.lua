@@ -10,13 +10,6 @@ vim.api.nvim_create_user_command("StrapsClassifierAudit", function()
 end, { desc = "straps_classifier: open the classification audit" })
 
 vim.api.nvim_create_user_command("StrapsClassifierStatus", function()
-  local s = require("straps_classifier").status()
-  local lines = {
-    "installed: " .. tostring(s.installed),
-    "api key:   " .. (s.api_key and "resolves" or "MISSING — every tool call is denied"),
-  }
-  if s.install_error then
-    lines[#lines + 1] = "error:     " .. s.install_error
-  end
-  vim.notify(table.concat(lines, "\n"))
+  local lines, level = require("straps_classifier").status_report()
+  vim.notify(table.concat(lines, "\n"), level)
 end, { desc = "straps_classifier: report install and key status" })

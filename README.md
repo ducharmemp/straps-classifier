@@ -1,7 +1,7 @@
 # straps-classifier
 
 Every tool call your agent makes is rated by [TypeSafe](https://typesafe.ai)'s
-Jev after you approve it. A call rated dangerous is blocked.
+Jev. A call rated dangerous is blocked, even when you approved it.
 
 The classifier can veto and cannot approve. Permission comes from you, from a
 `:StrapsAuto` grant you made, or — in a subagent — from the grant set its parent
@@ -9,16 +9,42 @@ gave it. This plugin only ever takes permission away.
 
 ## What happens on a tool call
 
-1. You decide: the confirm dialog, or silently through a `cap:` grant in auto
-   mode. A subagent's decision was made by its parent when it was spawned.
-2. The classifier rates the call. A dangerous rating blocks it, with a reason
-   naming the question that fired.
+1. The classifier rates the call. straps runs its guards before `hook.confirm`
+   (`gate_tool` in straps' `registry.lua`), so the request to TypeSafe goes out
+   before you see a dialog. The verdict is held; it is not shown yet.
+2. You decide: the confirm dialog, or silently through a `cap:` grant in auto
+   mode. A no ends the call and discards the verdict.
+3. On a yes, the held verdict is enforced. A dangerous rating blocks the call
+   with `blocked by hook.confirm: classifier: <reason>`, naming the question
+   that fired.
 
-That order is the point. A classifier in front of you is a second gatekeeper to
-argue with; behind you it is a check on the calls you waved through — which in
-auto mode is all of them.
+All child and fork scopes reject a dangerous rating in the guard at step 1,
+reading `blocked by hook.guard.classifier: classifier: <reason>`, before confirm.
+Scopes with `allow` or `readonly` do not prompt. Ungated scopes retain
+`hook.confirm` and can prompt for calls with safe ratings; the held verdict
+then reaches step 3.
+
+In parentless sessions, the verdict is enforced after your decision. Auto mode
+also reaches this enforcement step. The request itself happens first, so a call you reject has
+still been sent to TypeSafe. When a request takes longer than 500 ms,
+`straps_classifier: classifying <tool>…` shows in the message area until it
+returns.
 
 ## Install
+
+This revision requires a Straps core release newer than public revision
+`f2ebdb227917f51a4fc68479015a9a9e1787f00b`. The required core change is in
+`straps.registry.gate_tool`: preserve the confirmation hook's third return value
+`"hook"` and report its refusal as `blocked by hook.confirm: <reason>`.
+That change exists in the development core but has no public release revision
+at the time of this lock update. The locked public core still denies the call,
+but labels the classifier veto `user denied: classifier: <reason>`.
+
+The lock tracks the latest public core. Consequently, `nix flake check` fails
+`tests/confirm_spec.lua`'s hook-veto diagnostic assertion with that lock.
+A core release containing the change, followed by `nix flake update straps`,
+is required before the no-override check can pass. A local core override is a
+development check and does not establish public-core compatibility.
 
 The guard must be registered before the first straps session opens, because
 straps freezes its guard chain at that moment. It must also come after
@@ -83,11 +109,16 @@ install -m 600 /dev/stdin ~/.config/straps/typesafe_api_key <<< "your-key"
 
 ```
 :StrapsClassifierStatus
+:checkhealth straps_classifier
 ```
 
-`installed: true` with `api key: resolves` is a working install. Anything else
-means tool calls are being denied, and the message says which of the two is
-wrong.
+`installed: true` with `api key: resolves` is a working install, reported at
+INFO. A missing key reports at WARN with the key error; a failed install reports
+at ERROR. Before `setup()` runs, the status reads `setup() has not run; tool
+calls are NOT classified`. `:checkhealth straps_classifier` reports the same
+install and key state plus the audit's allow, deny, and failure counts.
+`require("straps_classifier").status()` returns `{ setup_ran, installed,
+install_error, api_key, api_key_error }` for a statusline.
 
 ## No key means no tools
 
@@ -258,8 +289,12 @@ spawned them.
 o     open that session's transcript
 d     denies only
 R     refresh
-x     clear this session's audit
+x     clear this session's audit, after a confirm prompt
 ```
+
+A second `:StrapsClassifierAudit` focuses the window already showing the audit.
+`<CR>` shows the record in `straps://classifier/record/<seq>` and reuses one
+record window.
 
 Every verdict, allow or deny, keeps the state it was judged on and the answers
 it got, so an allow that looks wrong reads back the same way a deny does. The
@@ -271,6 +306,8 @@ straps' own `fn.log` — every verdict emits `{ ev = "classify", ... }`, which
 lands as JSON lines when `config.log_file` is set.
 
 ## Configuration
+
+`:help straps-classifier` documents setup, commands and status. Setup rejects unknown keys and invalid types before installation. Numeric options must be finite and nonnegative; timeout and state byte limits must be positive integers, and retry must be an integer. Cutoff tables map string keys to finite nonnegative numbers. Deny patterns must form a list of valid Lua patterns. `audit_limit < 1` retains the previous limit and reports an error.
 
 ```lua
 require("straps_classifier").setup({
@@ -310,7 +347,8 @@ require("straps_classifier").setup({
   -- Lua patterns matched against the tool name and command-like fields of the
   -- input (command, code, path, paths) -- never prose fields like a write's
   -- content or a subagent's task. These deny with no network call, so they
-  -- work with no key at all.
+  -- work with no key at all. A rule may be { pattern = "...", label = "..." };
+  -- the deny reason then names the label instead of the pattern.
   always_deny_patterns = {
     "rm%s+%-rf%s+/", "%.ssh/id_", "%.aws/credentials",
     "^sudo%s", "%ssudo%s", "^doas%s", "%sdoas%s",
@@ -320,10 +358,15 @@ require("straps_classifier").setup({
   max_state_bytes = 4000,
   -- ask_user input is never elided; over this it is refused.
   ask_state_bytes = 16000,
-  audit_limit = 500,
+  audit_limit = 500,  -- below 1 is refused with an ERROR notify and ignored
   on_verdict = nil,  -- function(record), called off the tool path
 })
 ```
+
+`setup()` defines `fn.typesafe_api_key`, `fn.classifier_audit`, and
+`fn.classifier_audit_render` only when absent, so a redefinition made before
+`setup()` stays. `fn.typesafe`, `fn.risk_verdict`, `hook.confirm`, and
+`hook.guard.classifier` decide what is allowed and are always redefined.
 
 The config is frozen at `setup()`. A later assignment to the config table (from
 `eval_lua`, say) changes nothing the classifier does, so the settings are not a

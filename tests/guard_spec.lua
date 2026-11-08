@@ -336,6 +336,77 @@ it("an ask deny names the question and its fix", function()
   assert(reason:find(questions.fix("vague_option"), 1, true), "reason should carry its fix: " .. reason)
 end)
 
+local function await_ctx(bufnr)
+  return {
+    bufnr = bufnr,
+    await = function(start)
+      local out, done
+      start(function(v) out, done = v, true end)
+      vim.wait(5000, function() return done end, 5)
+      return out
+    end,
+    on_cancel = function() end,
+  }
+end
+
+it("a child session's guard block names the classifier", function()
+  local parent = state.new_session()
+  local child = state.new_session()
+  registry.ensure_scope(parent)
+  registry.ensure_scope(child, parent)
+  _G.TS.mode, _G.TS.ping = "hazard", 0
+  local allowed, reason = registry.gate_tool("ping", {}, await_ctx(child))
+  _G.TS.mode = "quiet"
+  assert(allowed == false, "a hazardous child call is blocked at the guard")
+  assert(reason:find("^blocked by hook.guard.classifier: classifier: "), tostring(reason))
+end)
+
+it("a scoped session with no scoped confirm runs a call rated ok through the global chain", function()
+  local parent = state.new_session()
+  local child = state.new_session()
+  registry.ensure_scope(parent)
+  registry.ensure_scope(child, parent)
+  assert(registry.scope_parent(child) == parent, "the child must have a scope parent")
+  _G.TS.calls, _G.TS.mode, _G.TS.ping = 0, "quiet", 0
+  local text = run_one(child, "ping", {})
+  assert(_G.TS.calls == 1, "want exactly one classification, got " .. _G.TS.calls)
+  assert(_G.TS.ping == 1, "the tool should have run:\n" .. text:sub(-400))
+  assert(not text:find("no verdict", 1, true), "the chain found no verdict:\n" .. text:sub(-400))
+end)
+
+it("a slow request echoes a classifying notice and clears it; a fast one echoes nothing", function()
+  local echoes = {}
+  local orig = vim.api.nvim_echo
+  vim.api.nvim_echo = function(chunks, ...)
+    echoes[#echoes + 1] = chunks[1][1]
+    return orig(chunks, ...)
+  end
+  local saved_delay = entries.PROGRESS_DELAY_MS
+  entries.PROGRESS_DELAY_MS = 30
+  local saved_fn = registry.get("fn.typesafe")
+  registry.define({ name = "fn.typesafe", kind = "fn", doc = "slow stub",
+    source = [[return function(payload, ctx)
+  ctx.await(function(resolve) vim.defer_fn(resolve, _G.TS.delay) end)
+  return {}
+end]] }, { scope = "global" })
+  local b = state.new_session()
+  _G.TS.delay = 150
+  registry.call("fn.risk_verdict", "ping", {}, await_ctx(b))
+  vim.wait(100, function() return false end)
+  local slow = vim.deepcopy(echoes)
+  echoes = {}
+  _G.TS.delay = 1
+  registry.call("fn.risk_verdict", "ping", {}, await_ctx(b))
+  vim.wait(100, function() return false end)
+  local fast = vim.deepcopy(echoes)
+  vim.api.nvim_echo = orig
+  entries.PROGRESS_DELAY_MS = saved_delay
+  registry.define({ name = "fn.typesafe", kind = "fn", doc = saved_fn.doc, source = saved_fn.source },
+    { scope = "global" })
+  assert(vim.deep_equal(slow, { "straps_classifier: classifying ping…", "" }), vim.inspect(slow))
+  assert(#fast == 0, "a fast request echoes nothing: " .. vim.inspect(fast))
+end)
+
 it("every classification is recorded", function()
   local total = select(1, audit.counts())
   assert(total.deny >= 4, "denies should be recorded, got " .. total.deny)

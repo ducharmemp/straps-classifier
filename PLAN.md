@@ -2,7 +2,8 @@
 
 Build a plugin in `/home/matt/code/straps-classifier` that sends every tool call
 to TypeSafe's Jev for a risk rating and blocks the ones it rates dangerous. The
-rating happens after the operator has approved the call, so the classifier is a
+rating request runs in a guard, before the operator's dialog; the verdict is
+enforced only after the operator has approved the call, so the classifier is a
 check on your own decisions, not a gate in front of them.
 
 **One repo changes: the plugin is new, and straps is untouched.** A second part,
@@ -25,12 +26,15 @@ suspicion, not permission.
 
 | Step | What runs | Outcome |
 | --- | --- | --- |
-| 1 | the operator's decision: your dialog, a `cap:` grant in auto mode, or the grant set a parent gave a child | yes or no |
-| 2 | the classifier, only on a yes | veto, or silence |
+| 1 | `hook.guard.classifier` sends the request and holds the verdict; a scoped session (subagent or fork) also blocks on a deny | verdict held, or (scoped) veto |
+| 2 | the operator's decision: your dialog, a `cap:` grant in auto mode, or the grant set a parent gave a child | yes or no; a no discards the verdict |
+| 3 | the chained `hook.confirm` enforces the held verdict, only on a yes | veto, or silence |
 
-In auto mode step 1 is silent — `:StrapsAuto` already granted the category — and
-the classifier is the only thing between that grant and the call. That is the case
-it exists for.
+straps runs before-guards ahead of `hook.confirm` (`gate_tool`), so the request
+in step 1 goes out before the dialog, and a call the operator rejects has still
+been sent. In auto mode step 2 is silent — `:StrapsAuto` already granted the
+category — and the classifier is the only thing between that grant and the call.
+That is the case it exists for.
 
 ## What the plan rests on
 
@@ -68,7 +72,8 @@ lua/straps_classifier/policy.lua      turns answers into deny or ok
 lua/straps_classifier/local_rules.lua path and command patterns, no network
 lua/straps_classifier/audit.lua       the per-session record and its buffer view
 lua/straps_classifier/entries.lua     the registry entries
-plugin/straps_classifier.lua          :StrapsClassifierAudit
+lua/straps_classifier/health.lua      :checkhealth straps_classifier
+plugin/straps_classifier.lua          :StrapsClassifierAudit, :StrapsClassifierStatus
 tests/policy_spec.lua   tests/local_rules_spec.lua  tests/guard_spec.lua
 tests/confirm_spec.lua  tests/audit_spec.lua        tests/live_spec.lua
 README.md
@@ -263,13 +268,15 @@ The guard is the only position every tool call passes: the loop path, the parall
 read batch, and the direct `registry.call("tool.*")` path that carries no confirm
 at all.
 
-- **Parent session on the loop path.** Classify, store the verdict in the slot,
-  and return nothing. The confirm chain enforces it after your decision, so a call
-  you reject costs no request.
-- **Child session** (`registry.scope_parent(bufnr)` non-nil). Classify and block
-  on `deny` here, because a child's own `hook.confirm`
-  (`agents.lua:284-295`) replaces our chain and there is no operator behind it.
-  What its parent granted is the approval the classifier subtracts from.
+- **Session on the loop path.** Classify, store the verdict in the slot, and
+  return nothing. The confirm chain enforces it after your decision. The guard
+  runs before the confirm, so a call you reject has still cost a request.
+- **Scoped session** (`registry.scope_parent(bufnr)` non-nil: a subagent or a
+  fork). Classify, block on `deny` here, and store the verdict otherwise. A
+  readonly or allow child's own `hook.confirm` (`agents.lua:284-295`) replaces
+  our chain, so only the guard reaches it; a fork or an ungated child keeps the
+  global chain, which needs the stored verdict. What its parent granted is the
+  approval the classifier subtracts from.
 - **Direct path, no `ctx`.** Nothing can await, so nothing can classify: denied
   with `no ctx to await on`. This closes the `eval_lua` bypass. No straps builtin
   calls tools this way (`registry.lua:515` is the only caller of `call_tool`), so
@@ -298,16 +305,17 @@ confirm(name, input, ctx):
   allowed, why = prev(name, input, ctx)      -- your dialog, or a cap: grant
   if not allowed -> false, why               -- rejected; nothing else runs
   action, reason = take_verdict(ctx.bufnr, name, input)
-  if action == "deny" -> false, "classifier: " .. reason
+  if action == "deny" -> false, "classifier: " .. reason, "hook"
   return true
 ```
 
 No second dialog: one you have already answered is one you learn to dismiss. The
 reason names the question that fired or the failure that stopped the check.
 
-`gate_tool` prefixes confirm refusals with `"user denied: "`
-(`registry.lua:442`), so a veto reads `user denied: classifier: writes_outside_root=0.91`.
-Cosmetic; parked.
+The third return value `"hook"` marks the refusal as a hook veto, so `gate_tool`
+reports `blocked by hook.confirm: classifier: writes_outside_root=0.91` instead
+of `user denied: ...`. A child session's guard block reads
+`blocked by hook.guard.classifier: classifier: ...`.
 
 ### A9. Every classification is inspectable
 
@@ -348,9 +356,10 @@ straps' own logger, which appends JSON lines when `config.log_file` is set and i
 a no-op otherwise (`provider.lua:2258-2262`). That is the machine-readable
 history across restarts; the ring is the live view.
 
-**`:checkhealth straps_classifier`.** Guard installed or frozen out, key
-resolving, one live probe, and the session's verdict counts — allows, denies, and
-failures by cause.
+**`:checkhealth straps_classifier`** (`lua/straps_classifier/health.lua`). Guard
+installed or frozen out, `install_error`, key resolving (with the key error), and
+the audit's verdict counts — allows, denies, and failures by cause. It sends no
+live probe.
 
 `config.on_verdict` still fires for anyone wiring their own sink, dispatched
 through `vim.schedule` inside a `pcall` (A7).
@@ -418,7 +427,7 @@ busted specs, run one per process as `busted tests/X_spec.lua` under `nlua`
 | --- | --- | --- |
 | `policy_spec.lua` | every hazard threshold, per-hazard `cutoffs` (one relaxed, one tightened, the signal, the edit skip kept), the opaque signal denying or logging by `opaque_action`, `redefines_protected` skipped for edit tools, damage escalation with no confidence downgrade, a mismatched legend denying, missing answers denying, over-cap and path-resolution state building; the ask battery: each hazard at its cutoff denies with its fix and the right prefix (do-not-ask without the rework suffix), a missing, NaN, or out-of-range answer denies, no damage needed, an unknown kind routes as hazard, `ask_deny_threshold` and its fallback, the battery shape (10 with fewer than two options, 20 with three), unelided ask state, and the `ask_user` field check; Hobson's, stacked-deck (naming the disfavored options), unstated-recommendation and unsupported-recommendation verdicts with their reasons and cutoff edges, honest steering passing, the verdict order, malformed fixed and per-option signals denying for every option count, watch mode, `ask_cutoffs` for code verdicts and per-hazard cutoffs | none |
 | `local_rules_spec.lua` | deny patterns fire with no key and no `ctx`, against command-like fields only and never prose | none |
-| `guard_spec.lua` | with a scripted `fn.typesafe`: a child session classifies and blocks; a parent's loop call leaves enforcement to the confirm; a direct `registry.call` with no `ctx` is denied with `no ctx to await on`; a local rule denies with no request; an over-cap program input denies with no request; a repeated call is classified again; through `gate_tool`, the builtin `ask_user` gets the ask battery while a session shadow (even with the builtin's source), a global redefinition, and a version-1 impostor get the command battery; an `ask_user` input outside the builtin's fields denies with no request | none |
+| `guard_spec.lua` | with a scripted `fn.typesafe`: a child session classifies and blocks a deny; a scoped session with no scoped confirm runs a call rated ok through the global chain; a parent's loop call leaves enforcement to the confirm; a direct `registry.call` with no `ctx` is denied with `no ctx to await on`; a local rule denies with no request; an over-cap program input denies with no request; a repeated call is classified again; through `gate_tool`, the builtin `ask_user` gets the ask battery while a session shadow (even with the builtin's source), a global redefinition, and a version-1 impostor get the command battery; an `ask_user` input outside the builtin's fields denies with no request | none |
 | `confirm_spec.lua` | a rejected call makes no request; an approved call is classified; a deny blocks with the question named; a silent `cap:` grant still reaches the classifier; a timeout blocks; a missing key blocks; the slot is empty after the confirm reads it | none |
 | `audit_spec.lua` | every classification lands in the ring, allow and deny alike; every verdict keeps the state and answers it was judged on, with the token cost; `answer_lines` sorts strongest first across noul/score/shapeless; the ring caps at `audit_limit` and drops oldest; a child's entries carry its parent bufnr and depth; `fn.classifier_audit_render` groups by session and survives a closed session buffer; `audit_limit = 0` is refused; `fn.log` receives one `ev = "classify"` per verdict; an `ask_user` verdict records `kind = "ask"`; `last_user_text` skips `[straps] ` notices and keeps head or tail | none |
 | `live_spec.lua` | the fixture matrix against Jev: every documented evasion denies on the intended question, every must-pass case (the plugin's own development included) stays clear, and the `ask ...` fixtures (`busted tests/live_spec.lua --filter ask`) deny rigged questions and pass honest ones; mean latency and token cost printed per battery; skipped with a note when `TYPESAFE_API_KEY` is unset | live |
@@ -452,10 +461,10 @@ was run after the Part B revert to confirm it (10/10 passing).
 
 - Coalescing a read batch into one request. The per-call guard signature cannot
   express it; needs a batch-aware entry point in straps.
-- The `"user denied: "` prefix on a classifier veto. For an `ask_user` deny it
-  combines with the straps prompt's no-retry guidance and can discourage the
-  reworked question; a child sees `blocked by hook.guard.classifier:`, which the
-  prompt also calls final.
+- A classifier veto reads `blocked by hook.confirm: classifier: ...` (child:
+  `blocked by hook.guard.classifier: classifier: ...`). The straps prompt calls
+  a `blocked by hook.*` result final policy, so for an `ask_user` deny it can
+  discourage the reworked question.
 - Jev sees only the last user message, so `already_answered` and
   `permission_seeking` miss instructions given earlier in the conversation.
 - `local_rules` searches plain-string `ask_user` options (numeric keys), so an

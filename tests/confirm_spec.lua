@@ -61,8 +61,9 @@ end)
 it("an approved call with a deny verdict is blocked", function()
   _G.OP.allow = true
   entries.put_verdict(1, "ping", {}, "deny", "data_loss=0.94 (>= 0.85)")
-  local allowed, why = confirm("ping", {}, ctx)
+  local allowed, why, source = confirm("ping", {}, ctx)
   assert(allowed == false, "a deny verdict must block an approved call")
+  assert(source == "hook", "a classifier veto is a hook veto, got " .. tostring(source))
   assert(why:find("classifier:", 1, true), "the veto should name itself: " .. why)
   assert(why:find("data_loss=0.94", 1, true), "the reason should carry the question: " .. why)
 end)
@@ -70,9 +71,27 @@ end)
 it("a missing verdict blocks", function()
   _G.OP.allow = true
   entries.clear_verdict()
-  local allowed, why = confirm("ping", {}, ctx)
+  local allowed, why, source = confirm("ping", {}, ctx)
   assert(allowed == false, "no verdict means no call")
+  assert(source == "hook", "a missing verdict is a hook veto, got " .. tostring(source))
   assert(why:find("no verdict", 1, true), "the reason should say so: " .. why)
+end)
+
+it("an operator rejection stays a user denial", function()
+  _G.OP.allow = false
+  local allowed, _, source = confirm("ping", {}, ctx)
+  _G.OP.allow = true
+  assert(allowed == false and source == nil, "the operator's no carries no hook source: " .. tostring(source))
+end)
+
+it("gate_tool reports a classifier veto as blocked by hook.confirm", function()
+  registry.define({ name = "tool.ping", kind = "tool", doc = "test",
+    source = "return function() return 'pong' end" }, { scope = "global" })
+  _G.OP.allow = true
+  entries.put_verdict(1, "ping", {}, "deny", "data_loss=0.94 (>= 0.85)")
+  local allowed, reason = registry.gate_tool("ping", {}, ctx, { confirm = confirm })
+  assert(allowed == false, "the veto blocks")
+  assert(reason == "blocked by hook.confirm: classifier: data_loss=0.94 (>= 0.85)", tostring(reason))
 end)
 
 it("a verdict for a different call does not satisfy this one", function()

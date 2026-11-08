@@ -1,0 +1,43 @@
+*straps-classifier.txt* Tool-call classification for Straps
+
+*straps-classifier* *straps-classifier-setup*
+Install Straps and this plugin, then configure before opening any session: >lua
+  require("straps").setup()
+  require("straps_classifier").setup({ model = "jev-latest" })
+<
+The Lua module keeps its underscore name. setup(opts) returns the module.
+Call setup eagerly: Straps freezes its guard chain when the first session opens.
+Late setup reports an error and leaves tool calls unclassified.
+The classifier can deny an admitted call; it cannot approve a call.
+A missing key or failed classification denies the call.
+Resolve the TypeSafe key through fn.typesafe_api_key (default TYPESAFE_API_KEY).
+
+Options include model, endpoint, timeout_ms (8000), retry (1), deny_threshold
+(0.85), damage_deny (2.5), opaque_action (deny or log), cutoffs,
+ask_deny_threshold, ask_cutoffs, always_deny_patterns, max_state_bytes (4000),
+ask_state_bytes (16000), audit_limit (500), and on_verdict (function).
+Unknown keys and invalid types raise errors before setup changes configuration.
+Numeric values must be finite and nonnegative. Timeout and state byte limits
+must be positive integers; retry is a nonnegative integer. audit_limit below
+1 reports an error and retains the prior limit. Cutoff tables map string keys
+to finite nonnegative numbers. A cutoff above 1 disables that question.
+setup freezes a configuration snapshot; editing config afterward does not
+change the installed classifier. See README.md for each hazard and ask_user rule.
+
+*straps-classifier-commands* *:StrapsClassifierAudit*
+:StrapsClassifierAudit opens the classification audit buffer.
+*:StrapsClassifierStatus*
+:StrapsClassifierStatus reports guard installation and key resolution.
+
+*straps-classifier-tools*
+This plugin adds guards and confirmation checks, with no agent tools.
+The installed guard evaluates tool input and denies unsafe calls. The audit
+records verdicts without granting permission or replacing admission policy.
+
+*straps-classifier-status*
+require("straps_classifier").status() returns setup_ran, installed,
+install_error, api_key and api_key_error. status_report() returns report lines,
+a notification level and status. :checkhealth straps_classifier reports setup,
+key resolution and audit counts. A resolving key does not test API access.
+
+vim:tw=78:ts=8:ft=help:norl:

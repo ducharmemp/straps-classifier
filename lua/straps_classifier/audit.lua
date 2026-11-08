@@ -334,6 +334,24 @@ local function entry_at_cursor()
   return nil
 end
 
+local function window_with_filetype(ft)
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.bo[vim.api.nvim_win_get_buf(w)].filetype == ft then
+      return w
+    end
+  end
+  return nil
+end
+
+local function window_with_buf(b)
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_get_buf(w) == b then
+      return w
+    end
+  end
+  return nil
+end
+
 -- The full record for one row, in a scratch split.
 local function open_record()
   local e, s = entry_at_cursor()
@@ -374,13 +392,41 @@ local function open_record()
       out[#out + 1] = "  " .. l
     end
   end
-  local b = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(b, 0, -1, false, out)
-  vim.bo[b].filetype = "straps_classifier_record"
-  vim.bo[b].bufhidden = "wipe"
-  vim.bo[b].modifiable = false
-  vim.cmd("botright vsplit")
+  local name = ("straps://classifier/record/%d"):format(e.seq)
+  local b = vim.fn.bufnr("^" .. name .. "$")
+  if b == -1 then
+    b = vim.api.nvim_create_buf(false, true)
+    vim.bo[b].buftype = "nofile"
+    vim.bo[b].bufhidden = "wipe"
+    vim.bo[b].swapfile = false
+    vim.api.nvim_buf_set_name(b, name)
+    vim.api.nvim_buf_set_lines(b, 0, -1, false, out)
+    vim.bo[b].filetype = "straps_classifier_record"
+    vim.bo[b].modifiable = false
+  end
+  local win = window_with_filetype("straps_classifier_record")
+  if win then
+    vim.api.nvim_set_current_win(win)
+  else
+    vim.cmd("botright vsplit")
+  end
   vim.api.nvim_win_set_buf(0, b)
+end
+
+local function clear_at_cursor()
+  local _, s = entry_at_cursor()
+  if not s then
+    return
+  end
+  local n = #s.entries
+  local choice = vim.fn.confirm(("Clear %d classification records for %s?"):format(n, tostring(s.label)),
+    "&Yes\n&No", 2)
+  if choice ~= 1 then
+    return
+  end
+  M.clear(s.key)
+  M.render(vim.api.nvim_get_current_buf())
+  vim.notify(("straps_classifier: cleared %d records for %s"):format(n, tostring(s.label)), vim.log.levels.INFO)
 end
 
 --- Open (or reuse) straps://classifier and render it.
@@ -408,18 +454,20 @@ function M.open()
       M.render(vim.api.nvim_get_current_buf())
     end)
     map("R", function() M.render(vim.api.nvim_get_current_buf()) end)
-    map("x", function()
-      local _, s = entry_at_cursor()
-      if s then
-        M.clear(s.key)
-        M.render(vim.api.nvim_get_current_buf())
-      end
-    end)
+    map("x", clear_at_cursor)
   end
-  vim.cmd("split")
-  vim.api.nvim_win_set_buf(0, bufnr)
+  local win = window_with_buf(bufnr)
+  if win then
+    vim.api.nvim_set_current_win(win)
+  else
+    vim.cmd("split")
+    vim.api.nvim_win_set_buf(0, bufnr)
+  end
   M.render(bufnr)
   return bufnr
 end
+
+M._open_record = open_record
+M._clear_at_cursor = clear_at_cursor
 
 return M

@@ -239,10 +239,26 @@ it("state resolves structured paths against the root", function()
   local s = questions.state("read_file", { path = "README.md" }, nil, cfg, { latest_user_request = "r", child = false })
   local r = s.resolved_paths["README.md"]
   assert(r and r.within == "project_root", "in-root path resolves to project_root: " .. vim.inspect(r))
-  local s2 = questions.state("delete_files", { paths = { "README.md", "/etc/hosts" } }, nil, cfg,
+  local outside = "/straps-classifier-outside-" .. vim.fn.getpid() .. "/file"
+  local s2 = questions.state("delete_files", { paths = { "README.md", outside } }, nil, cfg,
     { latest_user_request = "r", child = false })
-  assert(s2.resolved_paths["/etc/hosts"].within == "outside", "/etc is outside")
+  assert(s2.resolved_paths[outside].within == "outside", "unrelated absolute path is outside")
 end)
+
+for _, classification in ipairs({ "dependency_roots", "outside" }) do
+  it("structured symlinks resolve into " .. classification, function()
+    local base = vim.fn.tempname()
+    local project, target = base .. "/project", base .. "/target"
+    vim.fn.mkdir(project, "p")
+    vim.fn.mkdir(target, "p")
+    local link = project .. "/link"
+    assert(vim.uv.fs_symlink(target, link))
+    local deps = classification == "dependency_roots" and { target } or {}
+    local got = questions.resolve_paths({ path = link }, project, deps, {})
+    vim.fn.delete(base, "rf")
+    assert.are.equal(classification, got[link].within)
+  end)
+end
 
 it("dependency_roots lists the sibling straps checkout alongside STRAPS_ROOT", function()
   local root = vim.fn.getcwd()

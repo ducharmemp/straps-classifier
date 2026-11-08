@@ -45,12 +45,54 @@ function M.clear_verdict(bufnr)
   end
 end
 
+M.PROGRESS_DELAY_MS = 500
+
+local pending_progress = {}
+local displayed_progress
+
+local function render_progress()
+  local current
+  for i = #pending_progress, 1, -1 do
+    if pending_progress[i].eligible then
+      current = pending_progress[i]
+      break
+    end
+  end
+  if current == displayed_progress then return end
+  displayed_progress = current
+  local text = current and ("straps_classifier: classifying %s…"):format(current.name) or ""
+  vim.api.nvim_echo({ { text } }, false, {})
+end
+
+function M.start_progress(name)
+  local record = { name = tostring(name), eligible = false }
+  pending_progress[#pending_progress + 1] = record
+  local timer = vim.uv.new_timer()
+  timer:start(M.PROGRESS_DELAY_MS, 0, function()
+    if timer:is_closing() then return end
+    record.eligible = true
+    vim.schedule(render_progress)
+  end)
+  return function()
+    if timer:is_closing() then return end
+    timer:stop()
+    timer:close()
+    for i, pending in ipairs(pending_progress) do
+      if pending == record then
+        table.remove(pending_progress, i)
+        break
+      end
+    end
+    vim.schedule(render_progress)
+  end
+end
+
 function M.register()
   local registry = require("straps.registry")
   require("straps_classifier.questions").snapshot_ask_user()
 
   -- ── fn.typesafe_api_key ───────────────────────────────────────────────────
-  registry.define({
+  registry.define_default({
     name = "fn.typesafe_api_key",
     kind = "fn",
     doc = "Return the TypeSafe API key ($TYPESAFE_API_KEY, then"
@@ -90,7 +132,7 @@ return function()
     .. ", or redefine fn.typesafe_api_key.")
 end
 ]==],
-  }, { scope = "global" })
+  })
 
   -- ── fn.typesafe ───────────────────────────────────────────────────────────
   -- POST one battery. curl through vim.system inside ctx.await: never
@@ -181,7 +223,7 @@ end
   }, { scope = "global" })
 
   -- ── fn.classifier_audit ───────────────────────────────────────────────────
-  registry.define({
+  registry.define_default({
     name = "fn.classifier_audit",
     kind = "fn",
     doc = "Record one classification: (bufnr, record) -> record. The single"
@@ -192,9 +234,9 @@ return function(bufnr, rec)
   return require("straps_classifier.audit").record(bufnr, rec)
 end
 ]==],
-  }, { scope = "global" })
+  })
 
-  registry.define({
+  registry.define_default({
     name = "fn.classifier_audit_render",
     kind = "fn",
     doc = "Render the straps://classifier buffer from the audit rings. (bufnr).",
@@ -203,7 +245,7 @@ return function(bufnr)
   return require("straps_classifier.audit").render(bufnr)
 end
 ]==],
-  }, { scope = "global" })
+  })
 
   -- ── fn.risk_verdict ───────────────────────────────────────────────────────
   -- Local rules, then one TypeSafe request, then policy. Fails closed: every
@@ -266,11 +308,16 @@ return function(name, input, ctx)
     return finish("deny", tostring(state_err), { failure = tostring(state_err) })
   end
   local labels = kind == "ask" and questions.option_labels(input) or nil
-  local answers, err, usage = registry.call("fn.typesafe", {
+  local stop_progress = require("straps_classifier.entries").start_progress(name)
+  local ok_call, answers, err, usage = pcall(registry.call, "fn.typesafe", {
     state = state,
     model = cfg.model or "jev-latest",
     questions = questions.battery(kind, labels and #labels),
   }, ctx)
+  stop_progress()
+  if not ok_call then
+    answers, err = nil, answers
+  end
 
   if not answers then
     return finish("deny", tostring(err), { failure = tostring(err), state = state })
@@ -318,10 +365,10 @@ return function(name, input, ctx)
   end
   local action, reason = entries.take_verdict(ctx and ctx.bufnr, name, input)
   if action == nil then
-    return false, "classifier: no verdict was produced for this call"
+    return false, "classifier: no verdict was produced for this call", "hook"
   end
   if action == "deny" then
-    return false, "classifier: " .. tostring(reason)
+    return false, "classifier: " .. tostring(reason), "hook"
   end
   return true
 end
@@ -344,10 +391,11 @@ function M.register_guard()
   require("straps.registry").define({
     name = "hook.guard.classifier",
     kind = "hook",
-    doc = "straps_classifier: classify every tool call. In a parent session the"
-      .. " verdict is stored for the confirm chain to enforce after the operator"
-      .. " decides; in a child session (no operator) it blocks here; on the"
-      .. " direct call path there is no ctx to await on, so it blocks.",
+    doc = "straps_classifier: classify every tool call. The verdict is stored for"
+      .. " the confirm chain to enforce after the operator decides; a session with"
+      .. " a scope parent (subagent or fork) also blocks a deny here, because its"
+      .. " own hook.confirm shadow may replace the chain; on the direct call path"
+      .. " there is no ctx to await on, so it blocks.",
     source = [==[
 return function(op, name, input, ctx, info)
   if op ~= "before" then
@@ -374,19 +422,14 @@ return function(op, name, input, ctx, info)
       reason = reason, failure = denied and "local rule" or "no ctx",
       digest = vim.inspect(input):sub(1, 400), ms = 0,
     })
-    return false, reason
+    return false, "classifier: " .. reason
   end
 
   local action, reason = registry.call("fn.risk_verdict", name, input, ctx)
 
-  -- A child session has no operator behind it and its own hook.confirm shadow
-  -- replaces our chain, so the guard is the only position that reaches it.
   local parent = select(1, registry.scope_parent(bufnr))
-  if parent ~= nil then
-    if action == "deny" then
-      return false, reason
-    end
-    return
+  if parent ~= nil and action == "deny" then
+    return false, "classifier: " .. tostring(reason)
   end
 
   entries.put_verdict(bufnr, name, input, action, reason)
