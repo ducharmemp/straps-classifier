@@ -1,10 +1,7 @@
--- straps-classifier: every tool call is rated by TypeSafe's Jev, and a call
--- rated dangerous is blocked once the operator approves it. The classifier
--- can veto and cannot approve. No verdict means no call.
-
 local M = {}
 
 M.config = {
+  contextual = false,
   model = "jev-latest",
   endpoint = "https://api.typesafe.ai/v1/systemone",
   timeout_ms = 8000,
@@ -46,17 +43,29 @@ function M.effective()
   return snapshot or M.config
 end
 
---- Install the guard and the confirm chain. Call this EAGERLY — from
---- init.lua after require("straps").setup{}, or from
---- stdpath("config")/straps/init.lua. Guards freeze when the first session
---- opens, so a lazy load that fires on :Straps is too late and the session
---- runs unclassified.
 local DEFAULT_AUDIT_LIMIT = M.config.audit_limit
 
 function M.setup(opts)
   assert(opts == nil or type(opts) == "table", "straps_classifier: setup options must be a table")
   opts = vim.deepcopy(opts or {})
-  local optional = { cutoffs = "table", ask_cutoffs = "table", ask_deny_threshold = "number", on_verdict = "function" }
+  local contextual = opts.contextual
+  if contextual == nil and snapshot and type(snapshot.contextual) == "table" then contextual = snapshot.contextual; opts.contextual = vim.deepcopy(contextual) end
+  assert(contextual == nil or contextual == false or type(contextual) == "table", "straps_classifier: contextual must be false or an options table")
+  if type(contextual) == "table" then
+    assert(contextual.enabled == true, "straps_classifier: contextual requires enabled=true")
+    local allowed = { enabled = true, disclosure = true, route = true, limits = true, defect_threshold = true, thresholds = true }
+    for key in pairs(contextual) do assert(allowed[key], "straps_classifier: unknown contextual option " .. tostring(key)) end
+    require("straps_classifier.bootstrap").validate(contextual)
+  end
+  local enabled = type(contextual) == "table"
+  if M.setup_ran then
+    assert(enabled == (type(snapshot.contextual) == "table"), "straps_classifier: contextual mode switching requires restart")
+    if enabled then
+      assert(vim.deep_equal(contextual, snapshot.contextual), "straps_classifier: contextual reconfiguration requires restart")
+      return M
+    end
+  end
+  local optional = { cutoffs = "table", ask_cutoffs = "table", ask_deny_threshold = "number", on_verdict = "function", contextual = enabled and "table" or "boolean" }
   for key, value in pairs(opts) do
     local expected = optional[key] or (M.config[key] ~= nil and type(M.config[key]))
     assert(expected, "straps_classifier: unknown option " .. tostring(key))
@@ -103,11 +112,22 @@ function M.setup(opts)
       :format(tostring(opts.audit_limit), DEFAULT_AUDIT_LIMIT), vim.log.levels.ERROR)
     opts.audit_limit = nil
   end
+  local registry = require("straps.registry")
+  if enabled then
+    assert(registry.trusted_setup_allowed(), "straps_classifier: contextual setup must precede sessions and guard freeze")
+    M.config = vim.tbl_deep_extend("force", M.config, opts)
+    snapshot = vim.deepcopy(M.config)
+    M.setup_ran = true
+    local ok, result = pcall(require("straps_classifier.bootstrap").setup, snapshot.contextual)
+    M.installed, M.install_error = ok, not ok and tostring(result) or nil
+    if not ok then error(result) end
+    M.contextual_status = result
+    return M
+  end
   M.config = vim.tbl_deep_extend("force", M.config, opts)
   M.setup_ran = true
   snapshot = vim.deepcopy(M.config)
 
-  local registry = require("straps.registry")
   local entries = require("straps_classifier.entries")
 
   entries.register()
@@ -140,6 +160,10 @@ end
 --- Whether the classifier is actually in front of tool calls right now, for a
 --- statusline or a quick :lua check.
 function M.status()
+  if type(M.effective().contextual) == "table" then
+    return { setup_ran = M.setup_ran == true, installed = M.installed, install_error = M.install_error,
+      contextual = require("straps_classifier.bootstrap").status() }
+  end
   local key_ok, key_err = pcall(function()
     return require("straps.registry").call("fn.typesafe_api_key")
   end)
@@ -167,6 +191,15 @@ function M.status_report()
   if s.install_error then
     lines[#lines + 1] = "error:     " .. s.install_error .. "; tool calls are NOT classified"
     level = vim.log.levels.ERROR
+  end
+  if s.contextual then
+    lines[#lines + 1] = "contextual: opt-in; legacy classifier chain bypassed"
+    for _, dependency in ipairs(s.contextual.missing or {}) do
+      lines[#lines + 1] = "unavailable dependency: " .. dependency
+      level = vim.log.levels.WARN
+    end
+    if s.contextual.unavailable then lines[#lines + 1] = "unassessed: " .. s.contextual.unavailable end
+    return lines, level, s
   end
   if s.api_key then
     lines[#lines + 1] = "api key:   resolves"

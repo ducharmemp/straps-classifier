@@ -1,13 +1,17 @@
 # straps-classifier
 
-Every tool call your agent makes is rated by [TypeSafe](https://typesafe.ai)'s
+By default, every tool call your agent makes is rated by [TypeSafe](https://typesafe.ai)'s
 Jev. A call rated dangerous is blocked, even when you approved it.
+
+An experimental contextual mode is disabled by default. Its explicit bootstrap,
+current limitations, and release gates are described under [Contextual opt-in](#contextual-opt-in).
+The strict-mode behavior below applies when `contextual` is absent or `false`.
 
 The classifier can veto and cannot approve. Permission comes from you, from a
 `:StrapsAuto` grant you made, or — in a subagent — from the grant set its parent
 gave it. This plugin only ever takes permission away.
 
-## What happens on a tool call
+## What happens on a strict-mode tool call
 
 1. The classifier rates the call. straps runs its guards before `hook.confirm`
    (`gate_tool` in straps' `registry.lua`), so the request to TypeSafe goes out
@@ -29,6 +33,73 @@ also reaches this enforcement step. The request itself happens first, so a call 
 still been sent to TypeSafe. When a request takes longer than 500 ms,
 `straps_classifier: classifying <tool>…` shows in the message area until it
 returns.
+
+## Contextual opt-in
+
+Contextual authorization is experimental and disabled by default (`contextual = false`). Call `require("straps").setup()` first, then configure this plugin before any session opens or guards freeze. Contextual setup installs core-owned authorization callbacks instead of the legacy TypeSafe guard/confirmation chain. Other guards, ordinary confirmation, and readonly/allow ceilings still apply. Changing mode or contextual configuration requires a restart.
+
+This installs contextual mode without approving provider disclosure; assessment remains unavailable. Supply reviewed positive integer input limits even when assessment is unavailable:
+
+```lua
+require("straps").setup()
+require("straps_classifier").setup({
+  contextual = {
+    enabled = true,
+    limits = { max_bytes = serialized_byte_limit, max_depth = nesting_limit, max_items = item_limit },
+    disclosure = { approved = false },
+  },
+})
+```
+
+The complete bootstrap shape below names values that must come from a reviewed configuration. It is a shape reference, not a runnable configuration or an approved disclosure policy:
+
+```lua
+require("straps_classifier").setup({
+  contextual = {
+    enabled = true,
+    disclosure = {
+      approved = disclosure_approved,
+      provider_id = "openai",
+      revision = disclosure_revision,
+      allowed_classes = approved_data_classes,
+      inspect = approved_payload_inspector,
+    },
+    route = {
+      provider_config = { provider = "openai", openai_model = selected_model },
+      max_output_tokens = output_token_limit,
+      max_response_bytes = response_byte_limit,
+      timeout_ms = request_timeout,
+    },
+    limits = { max_bytes = serialized_byte_limit, max_depth = nesting_limit, max_items = item_limit },
+    defect_threshold = synthesis_defect_cutoff,
+    thresholds = { positive_threshold = authorization_cutoff, conflict_threshold = conflict_cutoff },
+  },
+})
+```
+
+`disclosure` binds approval to a provider and revision. `allowed_classes` maps approved sensitivity classes to `true`; `inspect` must return `"clear"` for accepted payloads. This callback is a disclosure-policy obligation, not evidence that automatic secret detection can certify arbitrary input. Credential material, unknown sensitivity, filtered required evidence, and failed inspection refuse requests. Permission to execute a tool does not approve disclosure of its arguments or source.
+
+The current bootstrap labels adopted human/standing sources as `project`, but labels the exact call and observed evidence as `unknown`. The disclosure validator rejects `unknown` even if `allowed_classes.unknown` is true. Production per-call provider requests therefore remain blocked pending an approved sensitivity/disclosure policy and implementation. Missing disclosure or dependencies denies automatic authorization as unassessed; it does not fall back to legacy strict mode. Human reopening can approve the displayed exact call under the independent checks below. Installed status alone does not establish assessment readiness.
+
+Core records private instruction events at trusted human submission, steering, and bound question-answer callbacks. Editable transcripts, pasted user-role text, summaries, notices, and public loop source flags cannot create authority. Standing instruction snapshots and private prompt construction receipts bind adoption to the stored prompt, composition definitions, and discovered instruction bytes. Changed standing instructions or prompt definitions require renewed adoption. Legacy/resumed sessions and copied fork prompts require human adoption; the initial adoption display can regenerate the prompt. Piped input is data until adopted. `:StrapsContinue` without text retains the task; supplied text creates a new instruction revision. Question answers record selected-option identity or free-text origin; typing an option label remains free text. Stop cancels run tickets while retaining the task and rejected-family suppression; `:StrapsTaskReset` invalidates it.
+
+Use `:StrapsAdopt [text]` to review task text and standing instructions. Use `:StrapsAuthorization {id}` to inspect a denial, and `:StrapsAuthorization! {id}` to reopen it through a fresh gate. Consent displays exact arguments and objections. A one-call approval binds the call, definition, session/task revisions, and target assumptions; execution consumes it once. A rejection suppresses its decision family until human reopening. Changed input or context invalidates approval. Denials and unavailable assessments do not open an automatic prompt for every call. Reopening does not repeat an operation whose outcome is unknown. Execution-started receipts retain metadata only; retained denied decisions support exact-call inspection and fresh reopening.
+
+An adopted session can remain pending without a synthesized task specification. Human reopening can approve the displayed exact call when disclosure, synthesis, assessment, or integration is unavailable, or despite displayed classifier objections. The approval leaves the task pending. Independent guards, ordinary confirmation, readonly/allow ceilings, fresh call and target checks, and consumption once at execution still apply.
+
+Task connection and coverage of every material effect are required for automatic allow. A bounded unresolved decision within the task can ask; unrelated work, explicit prohibitions, and missing task evidence deny. Human consent can override displayed classifier objections for the bound call, including a displayed prohibition conflict. It cannot bypass another guard or enlarge a child ceiling. Children receive only validated explicit subset delegation; copied conversation, archive access, and capability grants confer no task authority. In contextual mode, generic human `:StrapsFork`/`fn.fork` calls are unavailable because they lack a trusted exact invocation. An agent `fork` without delegation creates an inactive copy that requires human adoption before starting. Explicit fork delegation is rejected because the copied prompt has no valid private construction receipt.
+
+Displayed actor consent marks its existing run as waiting for consent and releases that wait when the prompt ends. Standalone adoption/inspection attention ownership remains unresolved.
+
+Contextual capability ceilings use private trusted classification of exact shipped definition identities. Public `capability` metadata and a replacement `fn.capability` do not establish trusted ceiling categories for custom tools; custom definitions remain subject to exact-definition assessment and independent ceilings. Wider custom-category authority remains unsupported.
+
+Target checks record known paths, process account, working directory, and unresolved facts. Literal shell recognition is bounded; custom definitions and hidden executable targets can remain unresolved. Revalidation cannot remove filesystem races after the check or enforce executable behavior. Lua and shell run with Neovim's user privileges; this feature supplies no operating-system sandbox.
+
+The configured contextual adapter currently supports the default OpenAI API endpoint with API-key or existing OAuth credentials. Other providers, custom authentication/backends/endpoints, and Codex remain unavailable. Contextual requests use isolated tool-free text JSON, local schema/source validation, and separate synthesis checks; they do not send the acting conversation as a normal provider request. Data minimization and inspection do not establish blanket absence of secrets.
+
+Numeric calibration, held-out live evaluation and acceptance of error/prompt rates remain release gates. The legacy `deny_threshold = 0.85` is not a calibrated contextual cutoff. Default enablement, provider disclosure, unsupported routes, and locked-public-core compatibility remain parked. Offline routing tests do not establish live calibration, completed integration, or production readiness. Progress-check enforcement and a dedicated structured remote-operation tool remain deferred.
+
+`status().contextual` reports bootstrap installation, missing dependencies, disclosure approval, and adapter unavailability where recorded. It does not resolve a TypeSafe key in contextual mode. `:checkhealth straps_classifier` renders that contextual state without legacy guard/key claims. The legacy classifier audit is not a complete contextual consent/event log; use the core decision inspector for a known decision ID.
 
 ## Install
 
@@ -97,7 +168,7 @@ A spec that fires on `:Straps` is too late: the session opens, the chain
 freezes, and the guard never installs. `setup()` says so at ERROR level in that
 case and `:StrapsClassifierStatus` keeps reporting it.
 
-### Either way, set a key
+### Strict mode: set a TypeSafe key
 
 ```sh
 export TYPESAFE_API_KEY=...
@@ -120,7 +191,7 @@ install and key state plus the audit's allow, deny, and failure counts.
 `require("straps_classifier").status()` returns `{ setup_ran, installed,
 install_error, api_key, api_key_error }` for a statusline.
 
-## No key means no tools
+## Strict mode: no key means no tools
 
 Without a working key every tool call is denied. That is deliberate. A plugin
 installed to keep an agent from wrecking things, which has not been configured

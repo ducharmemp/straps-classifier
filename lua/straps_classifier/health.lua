@@ -9,16 +9,31 @@ function M.check()
   if not s.setup_ran then
     health.error("setup() has not run; tool calls are NOT classified")
   elseif s.installed then
-    health.ok("guard installed")
+    health.ok(s.contextual and "contextual core integration installed; legacy classifier chain bypassed" or "guard installed")
   else
-    health.error("guard not installed: " .. tostring(s.install_error) .. "; tool calls are NOT classified")
+    health.error((s.contextual and "contextual core integration not installed: " or "guard not installed: ")
+      .. tostring(s.install_error) .. "; tool calls are NOT classified")
   end
 
-  health.start("straps_classifier: api key")
-  if s.api_key then
-    health.ok("fn.typesafe_api_key resolves")
+  if s.contextual then
+    health.start("straps_classifier: contextual assessment")
+    health.info("TypeSafe key resolution does not apply to contextual mode")
+    if s.contextual.disclosure_approved then
+      health.info("provider disclosure approved; installation alone does not establish assessment readiness")
+    else
+      health.warn("provider disclosure is not approved; contextual assessment unavailable")
+    end
+    for _, dependency in ipairs(s.contextual.missing or {}) do
+      health.warn("unavailable dependency: " .. dependency)
+    end
+    if s.contextual.unavailable then health.warn("unassessed: " .. s.contextual.unavailable) end
   else
-    health.warn("no key; every classified tool call is denied: " .. tostring(s.api_key_error))
+    health.start("straps_classifier: api key")
+    if s.api_key then
+      health.ok("fn.typesafe_api_key resolves")
+    else
+      health.warn("no key; every classified tool call is denied: " .. tostring(s.api_key_error))
+    end
   end
 
   health.start("straps_classifier: audit")

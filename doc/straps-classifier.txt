@@ -8,8 +8,10 @@ Install Straps and this plugin, then configure before opening any session: >lua
 The Lua module keeps its underscore name. setup(opts) returns the module.
 Call setup eagerly: Straps freezes its guard chain when the first session opens.
 Late setup reports an error and leaves tool calls unclassified.
-The classifier can deny an admitted call; it cannot approve a call.
-A missing key or failed classification denies the call.
+With contextual absent or false (the default), the classifier can deny an
+admitted call; it cannot approve a call. A missing key or failed classification
+denies the call. See |straps-classifier-contextual| for the separate experimental
+contextual bootstrap and its unresolved release gates.
 Resolve the TypeSafe key through fn.typesafe_api_key (default TYPESAFE_API_KEY).
 
 Options include model, endpoint, timeout_ms (8000), retry (1), deny_threshold
@@ -27,17 +29,109 @@ change the installed classifier. See README.md for each hazard and ask_user rule
 *straps-classifier-commands* *:StrapsClassifierAudit*
 :StrapsClassifierAudit opens the classification audit buffer.
 *:StrapsClassifierStatus*
-:StrapsClassifierStatus reports guard installation and key resolution.
+:StrapsClassifierStatus reports strict-mode guard/key state, or contextual
+bootstrap state when that mode is selected.
 
 *straps-classifier-tools*
-This plugin adds guards and confirmation checks, with no agent tools.
-The installed guard evaluates tool input and denies unsafe calls. The audit
-records verdicts without granting permission or replacing admission policy.
+This plugin adds no agent tools. In strict mode, its guards and confirmation
+checks evaluate tool input and deny unsafe calls. The strict-mode audit records
+verdicts without granting permission or replacing admission policy. Contextual
+mode uses the separate core integration described below.
 
 *straps-classifier-status*
-require("straps_classifier").status() returns setup_ran, installed,
-install_error, api_key and api_key_error. status_report() returns report lines,
+In strict mode, require("straps_classifier").status() returns setup_ran,
+installed, install_error, api_key and api_key_error. status_report() returns report lines,
 a notification level and status. :checkhealth straps_classifier reports setup,
 key resolution and audit counts. A resolving key does not test API access.
+
+*straps-classifier-contextual*
+Contextual authorization is experimental and disabled by default. Install after
+core setup and before sessions/guard freeze: >lua
+  require("straps").setup()
+  require("straps_classifier").setup({
+    contextual = { enabled = true, disclosure = { approved = false },
+      limits = { max_bytes = serialized_byte_limit, max_depth = nesting_limit, max_items = item_limit } },
+  })
+<
+This example requires reviewed positive integer input limits and approves no disclosure. Assessment remains unavailable. The
+contextual table accepts only enabled, disclosure, route, limits,
+defect_threshold, and thresholds. See README.md for the complete shape:
+- disclosure: approved, provider_id, revision, allowed_classes, inspect.
+- route: provider_config (provider-specific core keys; OpenAI uses provider =
+  "openai" and openai_model = selected_model), max_output_tokens,
+  max_response_bytes, timeout_ms.
+- limits: max_bytes, max_depth, max_items.
+- thresholds: positive_threshold, conflict_threshold.
+
+Supply reviewed disclosure policy and measured cutoffs; no calibrated values
+are provided here. Mode/configuration changes require restart. Contextual mode
+bypasses this plugin's legacy TypeSafe chain, preserving other guards, ordinary
+confirmation, and child ceilings. TypeSafe key resolution and the strict-mode
+key/status claims above do not apply to this bootstrap. status().contextual
+reports installation, missing dependencies, disclosure_approved, and adapter
+unavailability where recorded. Installed does not mean assessment-ready.
+:checkhealth straps_classifier reports contextual installation, disclosure,
+dependencies, and unavailability without legacy guard/key claims.
+
+Core owns private human events, task revisions, standing instruction snapshots,
+and prompt construction receipts. Editable transcript labels, summaries,
+notices, archive access, and copied prompts grant no authority. Trusted human
+submission/steering and bound question answers revise authority. Legacy/resumed
+sessions, piped data, and fork copies require adoption; adoption can regenerate
+the prompt. Continue without text retains the task; new text revises it. Stop
+preserves task identity and rejected-family suppression. Question answers record
+selected-option identity or free-text origin; typing a label remains free text.
+See |straps-contextual-authorization| and |:StrapsAdopt|, |:StrapsTaskReset|.
+
+Automatic allow requires task connection and coverage of material effects. A bounded
+unresolved in-task decision can ask. Unrelated work, prohibitions, and missing
+evidence deny. Failed synthesis/assessment or missing disclosure denies automatic
+authorization as unassessed, without prompting for every failed call. Inspect a
+known ID with |:StrapsAuthorization|; ! reopens through a fresh gate. Exact-call consent binds
+input/definition/context/targets and consumes once. Rejection suppresses its
+decision family until human reopening. Consent cannot bypass other guards or
+readonly/allow ceilings, and cannot retry an unknown execution outcome.
+Execution-started receipts retain metadata only; retained denied decisions support
+exact-call inspection and fresh reopening.
+
+An adopted session can remain pending without a synthesized task specification.
+Human reopening can approve the displayed exact call when disclosure, synthesis,
+assessment, or integration is unavailable, or despite displayed classifier
+objections. The approval leaves the task pending. Independent guards, ordinary
+confirmation, readonly/allow ceilings, fresh call and target checks, and
+consumption once at execution still apply.
+
+Children receive only explicit validated subset authority. In contextual mode,
+generic human :StrapsFork/fn.fork calls are unavailable because they lack a
+trusted exact invocation. Agent fork without delegation creates an inactive
+copy requiring human adoption before starting. Explicit fork delegation is
+rejected because the copied prompt has no valid private construction receipt.
+
+Contextual ceilings classify exact shipped definition identities through private
+trusted setup. Public capability metadata and fn.capability redefinition cannot
+grant trusted categories to custom tools. Exact-definition assessment and
+independent ceilings still apply; wider custom-category authority is unsupported.
+
+The bootstrap marks call input/evidence as unknown sensitivity. Validation
+rejects unknown even if allowed_classes.unknown is true. Production per-call
+requests remain blocked pending approved sensitivity/disclosure policy and
+implementation. Credential material and filtered required evidence refuse
+requests. Inspectors must return "clear"; this is no proof of blanket absence
+of secrets. Tool execution approval does not approve classifier disclosure.
+
+The adapter supports the default OpenAI API endpoint with API-key or existing
+OAuth credentials. Other providers, custom routes/authentication, and Codex
+remain unavailable. Requests use isolated tool-free text JSON, local schema
+validation, and separate synthesis checks. Target revalidation does not remove
+post-check filesystem races or enforce executable/shell behavior. Same-process
+Lua supplies no operating-system sandbox.
+
+Disclosure, numeric calibration and acceptance, default enablement, unsupported
+routes, and locked-core compatibility remain parked. The locked public core's
+hook-veto diagnostic still requires a newer release; a working-tree override
+does not prove public compatibility. Offline tests do not establish completed
+integration or live calibration. Progress enforcement and a dedicated remote
+operation tool remain deferred. The legacy audit is not a complete contextual
+consent/event log; use the core decision inspector for a known ID.
 
 vim:tw=78:ts=8:ft=help:norl:

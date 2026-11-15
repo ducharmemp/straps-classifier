@@ -87,7 +87,8 @@ function M.start_progress(name)
   end
 end
 
-function M.register()
+function M.register(contextual)
+  if contextual then return end
   local registry = require("straps.registry")
   require("straps_classifier.questions").snapshot_ask_user()
 
