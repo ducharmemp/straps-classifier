@@ -214,8 +214,12 @@ local function gate_ask(bufnr, input)
     await = function(start) local out; start(function(v) out = v end); return out end,
     on_cancel = function() end,
   }
-  registry.gate_tool("ask_user", input, ctx)
+  local allowed, gate_reason = registry.gate_tool("ask_user", input, ctx)
   local action, reason = entries.take_verdict(bufnr, "ask_user", input)
+  if not allowed then
+    assert(action == nil, "a guard denial must leave no verdict")
+    return "deny", gate_reason, _G.TS.last_payload
+  end
   return action, reason, _G.TS.last_payload
 end
 
@@ -327,10 +331,11 @@ it("an ask deny names the question and its fix", function()
     on_cancel = function() end,
   }
   _G.TS.calls = 0
-  registry.gate_tool("ask_user", ASK, ctx)
-  local action, reason = entries.take_verdict(b, "ask_user", ASK)
+  local allowed, reason = registry.gate_tool("ask_user", ASK, ctx)
+  local action = entries.take_verdict(b, "ask_user", ASK)
   _G.TS.mode = "quiet"
-  assert(action == "deny", "a 0.97 ask noul should deny")
+  assert(allowed == false, "a 0.97 ask noul should deny")
+  assert(action == nil, "a guard denial must leave no verdict")
   assert(reason:find("needs rework", 1, true), "reason should ask for rework: " .. tostring(reason))
   assert(reason:find("vague_option=0.97", 1, true), "reason should name the first top noul: " .. reason)
   assert(reason:find(questions.fix("vague_option"), 1, true), "reason should carry its fix: " .. reason)
@@ -348,6 +353,59 @@ local function await_ctx(bufnr)
     on_cancel = function() end,
   }
 end
+
+registry.define({ name = "tool.wrapper", kind = "tool", doc = "test", capability = "read",
+  source = [[return function(input, ctx)
+    _G.TS.mode = input.mode
+    return require("straps.registry").call("tool.ping", {}, ctx)
+  end]] }, { scope = "global" })
+
+for _, mode in ipairs({ "hazard", "error", "timeout" }) do
+  for _, path in ipairs({ "direct", "nested" }) do
+    it("blocks root " .. path .. " calls on " .. mode, function()
+      local b = state.new_session()
+      _G.TS.calls, _G.TS.ping, _G.CONFIRMS = 0, 0, 0
+      _G.TS.mode = path == "nested" and "quiet" or mode
+      entries.put_verdict(b, "ping", {}, "ok", "stale")
+      local ok, reason = pcall(registry.call, path == "nested" and "tool.wrapper" or "tool.ping",
+        path == "nested" and { mode = mode } or {}, await_ctx(b))
+      _G.TS.mode = "quiet"
+      assert(not ok, "the guard must refuse")
+      assert(tostring(reason):find("blocked by hook.guard.classifier:", 1, true), "the guard must name its veto")
+      assert(_G.TS.ping == 0, "the denied tool body must not run")
+      assert(_G.TS.calls == (path == "nested" and 2 or 1), "each call must be assessed")
+      assert(_G.CONFIRMS == 0, "a guard veto must not depend on confirmation")
+      assert(entries.take_verdict(b, "ping", {}) == nil, "the stale verdict must be cleared")
+    end)
+  end
+end
+
+for _, source in ipairs({
+  "return function() error('fixture classification failure') end",
+  "return function() return nil, 'fixture unavailable' end",
+  "return function() return 'unexpected', 'fixture malformed action' end",
+}) do
+  it("clears stale approval when classification fails: " .. source, function()
+    local b = state.new_session()
+    local saved = registry.get("fn.risk_verdict")
+    registry.define({ name = saved.name, kind = saved.kind, source = source }, { scope = "global" })
+    entries.put_verdict(b, "ping", {}, "ok", "stale")
+    _G.TS.ping = 0
+    local ok = pcall(registry.call, "tool.ping", {}, await_ctx(b))
+    registry.define({ name = saved.name, kind = saved.kind, source = saved.source }, { scope = "global" })
+    assert(not ok, "classification failure must refuse")
+    assert(_G.TS.ping == 0, "classification failure must withhold execution")
+    assert(entries.take_verdict(b, "ping", {}) == nil, "classification failure must clear stale approval")
+  end)
+end
+
+it("clears stale approval without an await context", function()
+  local b = state.new_session()
+  entries.put_verdict(b, "ping", {}, "ok", "stale")
+  local ok = pcall(registry.call, "tool.ping", {}, { bufnr = b })
+  assert(not ok, "missing await must refuse")
+  assert(entries.take_verdict(b, "ping", {}) == nil, "missing await must clear stale approval")
+end)
 
 it("a child session's guard block names the classifier", function()
   local parent = state.new_session()

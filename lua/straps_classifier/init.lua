@@ -2,6 +2,7 @@ local M = {}
 
 M.config = {
   contextual = false,
+  best_effort = false,
   model = "jev-latest",
   endpoint = "https://api.typesafe.ai/v1/systemone",
   timeout_ms = 8000,
@@ -40,7 +41,7 @@ M.install_error = nil
 local snapshot = nil
 
 function M.effective()
-  return snapshot or M.config
+  return vim.deepcopy(snapshot or M.config)
 end
 
 local DEFAULT_AUDIT_LIMIT = M.config.audit_limit
@@ -48,6 +49,28 @@ local DEFAULT_AUDIT_LIMIT = M.config.audit_limit
 function M.setup(opts)
   assert(opts == nil or type(opts) == "table", "straps_classifier: setup options must be a table")
   opts = vim.deepcopy(opts or {})
+  local best_effort = opts.best_effort
+  if best_effort == nil and snapshot then best_effort = snapshot.best_effort end
+  assert(best_effort == nil or best_effort == false or type(best_effort) == "table",
+    "straps_classifier: best_effort must be false or an options table")
+  if type(best_effort) == "table" then
+    require("straps_classifier.best_effort").validate(best_effort)
+    best_effort = vim.deepcopy(best_effort)
+    if best_effort.max_request_bytes == nil then best_effort.max_request_bytes = 65536 end
+    opts.best_effort = best_effort
+  end
+  local best_enabled = type(best_effort) == "table"
+  if M.setup_ran then
+    assert(best_enabled == (type(snapshot.best_effort) == "table"), "straps_classifier: best_effort mode switching requires restart")
+    if best_enabled then
+      assert(vim.deep_equal(best_effort, snapshot.best_effort), "straps_classifier: best_effort reconfiguration requires restart")
+      assert(vim.deep_equal(vim.tbl_deep_extend("force", vim.deepcopy(snapshot), opts), snapshot),
+        "straps_classifier: best_effort reconfiguration requires restart")
+      return M
+    end
+  end
+  assert(not best_enabled or opts.contextual == nil or opts.contextual == false,
+    "straps_classifier: best_effort and contextual are mutually exclusive")
   local contextual = opts.contextual
   if contextual == nil and snapshot and type(snapshot.contextual) == "table" then contextual = snapshot.contextual; opts.contextual = vim.deepcopy(contextual) end
   assert(contextual == nil or contextual == false or type(contextual) == "table", "straps_classifier: contextual must be false or an options table")
@@ -66,6 +89,7 @@ function M.setup(opts)
     end
   end
   local optional = { cutoffs = "table", ask_cutoffs = "table", ask_deny_threshold = "number", on_verdict = "function", contextual = enabled and "table" or "boolean" }
+  optional.best_effort = best_enabled and "table" or "boolean"
   for key, value in pairs(opts) do
     local expected = optional[key] or (M.config[key] ~= nil and type(M.config[key]))
     assert(expected, "straps_classifier: unknown option " .. tostring(key))
@@ -113,6 +137,10 @@ function M.setup(opts)
     opts.audit_limit = nil
   end
   local registry = require("straps.registry")
+  if best_enabled then
+    assert(not enabled and M.config.contextual == false, "straps_classifier: best_effort and contextual are mutually exclusive")
+    assert(registry.trusted_setup_allowed(), "straps_classifier: best_effort setup must precede sessions and guard freeze")
+  end
   if enabled then
     assert(registry.trusted_setup_allowed(), "straps_classifier: contextual setup must precede sessions and guard freeze")
     M.config = vim.tbl_deep_extend("force", M.config, opts)
@@ -124,7 +152,9 @@ function M.setup(opts)
     M.contextual_status = result
     return M
   end
-  M.config = vim.tbl_deep_extend("force", M.config, opts)
+  local base = vim.deepcopy(snapshot or M.config)
+  base.best_effort = best_effort or false
+  M.config = vim.tbl_deep_extend("force", base, opts)
   M.setup_ran = true
   snapshot = vim.deepcopy(M.config)
 
@@ -164,16 +194,26 @@ function M.status()
     return { setup_ran = M.setup_ran == true, installed = M.installed, install_error = M.install_error,
       contextual = require("straps_classifier.bootstrap").status() }
   end
-  local key_ok, key_err = pcall(function()
-    return require("straps.registry").call("fn.typesafe_api_key")
-  end)
-  if key_ok and (type(key_err) ~= "string" or key_err == "") then
-    key_ok, key_err = false, "fn.typesafe_api_key returned no key"
+  local cfg = M.effective()
+  local adapter = type(cfg.best_effort) == "table" and require("straps_classifier.adapter").resolve(cfg.best_effort, cfg) or nil
+  local key_ok, key_err
+  if adapter and adapter.name == "anthropic" then
+    local base_url, err = require("straps_classifier.adapter").anthropic_credentials()
+    key_ok, key_err = base_url ~= nil, err
+  else
+    key_ok, key_err = pcall(function()
+      return require("straps.registry").call("fn.typesafe_api_key")
+    end)
+    if key_ok and (type(key_err) ~= "string" or key_err == "") then
+      key_ok, key_err = false, "fn.typesafe_api_key returned no key"
+    end
   end
   return {
     setup_ran = M.setup_ran == true,
     installed = M.installed,
     install_error = M.install_error,
+    adapter = adapter and adapter.name or "typesafe",
+    model = adapter and adapter.model or cfg.model,
     api_key = key_ok,
     api_key_error = not key_ok and tostring(key_err) or nil,
   }
@@ -201,6 +241,7 @@ function M.status_report()
     if s.contextual.unavailable then lines[#lines + 1] = "unassessed: " .. s.contextual.unavailable end
     return lines, level, s
   end
+  lines[#lines + 1] = "adapter:   " .. tostring(s.adapter) .. " (" .. tostring(s.model) .. ")"
   if s.api_key then
     lines[#lines + 1] = "api key:   resolves"
   else

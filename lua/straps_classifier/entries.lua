@@ -5,16 +5,6 @@
 local M = {}
 
 -- ── the verdict slot ────────────────────────────────────────────────────────
--- The guard classifies; the confirm chain enforces. They are two halves of one
--- gate_tool pass, microseconds apart, and the slot carries the verdict between
--- them. One entry per session, keyed to the exact call, cleared on read. Not a
--- cache: it answers no future call.
---
--- Per session, not one global slot: sessions run concurrently in one Neovim (a
--- parent and its subagent, or two peers), and a single slot lets one session's
--- guard overwrite another's verdict between that session's guard and its
--- confirm. The key check would catch it and deny, but the denial would be
--- spurious -- legitimate work blocked by a neighbour's timing.
 local slots = {}
 
 local function slot_key(name, input)
@@ -142,8 +132,8 @@ end
     name = "fn.typesafe",
     kind = "fn",
     doc = "POST a System One request to TypeSafe. (payload, ctx) -> answers |"
-      .. " nil, err. Requires ctx (it awaits); one retry on 429/529/connection"
-      .. " failure.",
+      .. " nil, err. Requires ctx (it awaits); configured retries in strict mode,"
+      .. " one attempt in best-effort mode.",
     source = [==[
 return function(payload, ctx)
   if not (ctx and ctx.await) then
@@ -153,7 +143,7 @@ return function(payload, ctx)
   local cfg = (ok_cfg and type(plugin.effective) == "function" and plugin.effective())
     or (ok_cfg and plugin.config) or {}
   local timeout_ms = tonumber(cfg.timeout_ms) or 8000
-  local retries = tonumber(cfg.retry) or 1
+  local retries = type(cfg.best_effort) == "table" and 0 or (tonumber(cfg.retry) or 1)
   local url = cfg.endpoint or "https://api.typesafe.ai/v1/systemone"
 
   local ok_key, key = pcall(require("straps.registry").call, "fn.typesafe_api_key")
@@ -188,7 +178,7 @@ return function(payload, ctx)
     local out = res.stdout or ""
     local status = out:match("\n(%d%d%d)%s*$")
     local payload_text = status and out:sub(1, #out - #status - 1) or out
-    if res.code ~= 0 and not status then
+    if res.code ~= 0 or (res.signal ~= nil and res.signal ~= 0) then
       if res.signal == 15 or (res.stderr or ""):find("timed out") or res.code == 28 then
         return nil, ("timeout after %dms"):format(timeout_ms), true
       end
@@ -206,7 +196,9 @@ return function(payload, ctx)
     if not ok_decode or type(decoded) ~= "table" or type(decoded.answers) ~= "table" then
       return nil, "unparseable response"
     end
-    return decoded.answers, nil, false, decoded.usage
+    local answers, validation_err = require("straps_classifier.response").envelope(payload.questions, decoded)
+    if not answers then return nil, validation_err end
+    return answers, nil, false, decoded.usage
   end
 
   local answers, err, retryable, usage = attempt()
@@ -219,6 +211,56 @@ return function(payload, ctx)
     return nil, err
   end
   return answers, nil, usage
+end
+]==],
+  }, { scope = "global" })
+
+  registry.define({
+    name = "fn.classifier_anthropic",
+    kind = "fn",
+    doc = "POST one best-effort assessment to the Anthropic Messages API with the straps"
+      .. " Anthropic provider credentials. (payload, ctx, spec) -> answers | nil, err."
+      .. " One attempt; a response that did not finish or carries no valid choices is unavailable.",
+    source = [==[
+return function(payload, ctx, spec)
+  if not (ctx and ctx.await) then
+    return nil, "no ctx to await on"
+  end
+  local adapter = require("straps_classifier.adapter")
+  local timeout_ms = tonumber(spec and spec.timeout_ms) or 30000
+  local base_url, headers = adapter.anthropic_credentials()
+  if not base_url then return nil, headers end
+  local ok_body, body = pcall(vim.json.encode, adapter.anthropic_request(payload, spec))
+  if not ok_body then return nil, "could not encode the request" end
+  local argv = { "curl", "-sS", "-X", "POST", base_url .. "/v1/messages" }
+  vim.list_extend(argv, headers)
+  vim.list_extend(argv, {
+    "-H", "anthropic-version: 2023-06-01",
+    "-H", "content-type: application/json",
+    "-w", "\n%{http_code}",
+    "--max-time", tostring(math.ceil(timeout_ms / 1000)),
+    "--data-binary", "@-",
+  })
+  local proc
+  local res = ctx.await(function(resolve)
+    proc = vim.system(argv, { text = true, stdin = body, timeout = timeout_ms }, function(out) resolve(out) end)
+    if ctx.on_cancel then
+      ctx.on_cancel(function() pcall(function() proc:kill(9) end) end)
+    end
+  end)
+  if type(res) ~= "table" then return nil, "classifier request produced no response" end
+  if res.code ~= 0 or (res.signal ~= nil and res.signal ~= 0) then
+    if res.signal == 15 or res.code == 28 then return nil, ("timeout after %dms"):format(timeout_ms) end
+    return nil, ("curl exited %s"):format(tostring(res.code))
+  end
+  local out = res.stdout or ""
+  local status = out:match("\n(%d%d%d)%s*$")
+  local text = status and out:sub(1, #out - #status - 1) or out
+  status = tonumber(status) or 0
+  if status < 200 or status >= 300 then return nil, ("HTTP %d"):format(status) end
+  local ok_decode, decoded = pcall(vim.json.decode, text)
+  if not ok_decode then return nil, "unparseable response" end
+  return adapter.anthropic_response(decoded, payload.questions)
 end
 ]==],
   }, { scope = "global" })
@@ -261,6 +303,9 @@ end
 return function(name, input, ctx)
   local plugin = require("straps_classifier")
   local cfg = plugin.effective and plugin.effective() or plugin.config
+  if type(cfg.best_effort) == "table" then
+    return require("straps_classifier.best_effort").verdict(name, input, ctx, cfg)
+  end
   local questions = require("straps_classifier.questions")
   local policy = require("straps_classifier.policy")
   local local_rules = require("straps_classifier.local_rules")
@@ -392,28 +437,33 @@ function M.register_guard()
   require("straps.registry").define({
     name = "hook.guard.classifier",
     kind = "hook",
-    doc = "straps_classifier: classify every tool call. The verdict is stored for"
-      .. " the confirm chain to enforce after the operator decides; a session with"
-      .. " a scope parent (subagent or fork) also blocks a deny here, because its"
-      .. " own hook.confirm shadow may replace the chain; on the direct call path"
-      .. " there is no ctx to await on, so it blocks.",
+    doc = "straps_classifier: classify every tool call and block every non-ok verdict."
+      .. " Store ok for the confirm chain, which preserves the operator's decision."
+      .. " Calls without an await context are blocked.",
     source = [==[
 return function(op, name, input, ctx, info)
   if op ~= "before" then
     return
   end
+  local entries = require("straps_classifier.entries")
+  entries.clear_verdict(ctx and ctx.bufnr or 0)
   local ok_plugin, plugin = pcall(require, "straps_classifier")
   if not ok_plugin or not plugin.config then
     return false, "straps_classifier: plugin not configured"
   end
-  local entries = require("straps_classifier.entries")
   local registry = require("straps.registry")
 
   local bufnr = ctx and ctx.bufnr or nil
 
-  -- No ctx means nothing can await, so nothing can be classified. This is the
-  -- direct registry.call("tool.*") path, which carries no confirm either.
   if not (ctx and ctx.await) then
+    local cfg = plugin.effective and plugin.effective() or plugin.config
+    if type(cfg.best_effort) == "table" then
+      local reason = "best-effort classification requires an await context"
+      pcall(registry.try_call, "fn.classifier_audit", bufnr or 0, {
+        tool = tostring(name), action = "deny", reason = reason, ms = 0,
+      })
+      return false, "classifier: " .. reason
+    end
     local local_rules = require("straps_classifier.local_rules")
     local denied, why = local_rules.check(name, input,
       plugin.effective and plugin.effective() or plugin.config)
@@ -428,8 +478,7 @@ return function(op, name, input, ctx, info)
 
   local action, reason = registry.call("fn.risk_verdict", name, input, ctx)
 
-  local parent = select(1, registry.scope_parent(bufnr))
-  if parent ~= nil and action == "deny" then
+  if action ~= "ok" then
     return false, "classifier: " .. tostring(reason)
   end
 

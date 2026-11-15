@@ -777,6 +777,7 @@ end
 M.PROTECTED = {
   "fn.typesafe",
   "fn.typesafe_api_key",
+  "fn.classifier_anthropic",
   "fn.risk_verdict",
   "fn.classifier_audit",
   "fn.classifier_audit_render",

@@ -8,11 +8,33 @@ Install Straps and this plugin, then configure before opening any session: >lua
 The Lua module keeps its underscore name. setup(opts) returns the module.
 Call setup eagerly: Straps freezes its guard chain when the first session opens.
 Late setup reports an error and leaves tool calls unclassified.
-With contextual absent or false (the default), the classifier can deny an
-admitted call; it cannot approve a call. A missing key or failed classification
+With contextual and best_effort absent or false (the defaults), legacy strict
+behavior remains unchanged. The classifier can deny an admitted call; it cannot
+approve a call. A missing key or failed classification
 denies the call. See |straps-classifier-contextual| for the separate experimental
 contextual bootstrap and its unresolved release gates.
 Resolve the TypeSafe key through fn.typesafe_api_key (default TYPESAFE_API_KEY).
+
+The strict-mode guard clears stale verdicts before each call. Deterministic local
+prohibitions run before the model request. Every result other than ok blocks in
+root, child, and fork sessions before confirmation, including with auto grants.
+An ok result is held for the exact call and consumed by the chained operator
+confirmation; it cannot grant permission. Child allow/readonly ceilings still
+apply. A guard veto reads blocked by hook.guard.classifier: classifier: <reason>.
+
+Transport rejects nonzero process exits or signals and response envelopes that
+indicate error, refusal, incompleteness, or unsuccessful status. Required answer
+IDs must match the request exactly, and answer types must match. Noul values
+must be finite and within [0,1]. Scores must fit the requested rubric, with an
+exact legend and finite confidence within [0,1]; choices must name a requested
+option and carry finite confidence within [0,1]. Malformed responses deny.
+Direct ask_user policy thresholds and permission behavior remain unchanged.
+
+Synthetic probes do not qualify the classifier for safety. This change relaxes
+no thresholds, permissions, or ask_user behavior. Optional response distributions
+remain unused and unvalidated. Duplicate JSON keys, transport response byte
+bounds, the provider's actual refusal format, and contextual policy calibration
+remain parked.
 
 Options include model, endpoint, timeout_ms (8000), retry (1), deny_threshold
 (0.85), damage_deny (2.5), opaque_action (deny or log), cutoffs,
@@ -39,10 +61,119 @@ verdicts without granting permission or replacing admission policy. Contextual
 mode uses the separate core integration described below.
 
 *straps-classifier-status*
-In strict mode, require("straps_classifier").status() returns setup_ran,
-installed, install_error, api_key and api_key_error. status_report() returns report lines,
+In strict and best-effort modes, require("straps_classifier").status() returns
+setup_ran, installed, install_error, adapter, model, api_key and api_key_error. status_report() returns report lines,
 a notification level and status. :checkhealth straps_classifier reports setup,
 key resolution and audit counts. A resolving key does not test API access.
+
+*straps-classifier-best-effort*
+Best-effort mode defaults to false and is mutually exclusive with contextual.
+Legacy strict behavior remains unchanged when both modes are absent or false.
+Configure after core setup and before sessions or guard freeze. Configuration,
+including scope, is frozen; changes require restart.
+
+This shape reference requires operator decisions for the acknowledgment variables
+and grants no approval: >lua
+  require("straps_classifier").setup({
+    model = selected_typesafe_model,
+    best_effort = {
+      enabled = true,
+      acknowledge_risk = operator_acknowledged_risk,
+      disclosure_approved = operator_approved_disclosure,
+      operator_scope = reviewed_operator_scope,
+      prohibitions = reviewed_operator_prohibitions,
+      max_request_bytes = 65536,
+    },
+  })
+<
+Options:
+  enabled                Required true.
+  acknowledge_risk       Required true; effects are not proven.
+  disclosure_approved    Required true; approves provider transmission below.
+  operator_scope         Required nonempty startup authority string.
+  prohibitions           Optional list of nonempty prohibition strings.
+  max_request_bytes      Optional integer 1024..1048576; default 65536.
+  adapter                Optional table selecting the assessing model;
+                         omit for TypeSafe. See |straps-classifier-adapter|.
+
+*straps-classifier-adapter*
+adapter picks the model that answers the six questions. Questions, routing and
+fail-closed rules are identical for both adapters.
+
+  omitted or { name = "typesafe" }
+      Top-level model (default jev-latest), fn.typesafe_api_key, top-level
+      timeout_ms.
+  { name = "anthropic" }
+      model        default claude-sonnet-5
+      max_tokens   default 4000, range 1000..32000; includes reasoning
+      timeout_ms   default 30000, range 1000..120000
+      Uses the straps Anthropic provider key and base URL (:StrapsLogin
+      anthropic or $ANTHROPIC_API_KEY).
+
+The anthropic adapter sends one request to /v1/messages without retry. A
+response that stops before finishing, has no text answer, omits a question or
+names an unknown choice is unavailable and denies. disclosure_approved must
+cover Anthropic when this adapter is selected. status() and :checkhealth report
+the selected adapter and whether its credential resolves.
+
+Sonnet 5 passed a 15-case probe of print-only operations that TypeSafe
+withholds. That probe covers one scenario type only.
+
+Startup scope supplies standing authority for ALL sessions in this Neovim.
+Transcript text, agent tasks, tool results and operation approval claims grant
+no authority. Child ceilings, other guards, confirmation and :StrapsAuto grants
+remain independent. The classifier cannot grant permission. Mandatory and
+operator prohibitions take precedence over grants. Best-effort replaces legacy
+categorical patterns and hazard thresholds, including the strict ask_user
+battery, with scope and prohibition assessment.
+
+The default TypeSafe adapter uses the configured top-level model (default
+jev-latest), endpoint and timeout_ms. Each adapter makes one transport attempt
+regardless of retry. Requests include
+full tool input, registered definition source, working directory, startup scope
+and prohibitions. Oversized requests deny without truncating input or source.
+The classifier adds no transcript or environment values.
+
+Provider transmission precedes operator confirmation, including calls the
+operator later refuses. Disclosure approval covers submitted input, source and
+scope. The classifier cannot reliably detect arbitrary secrets before sending
+those contents. Avoid submitting secrets.
+
+Allow requires favorable model answers for authority, prohibitions, credential
+disclosure, protection tampering, material uncertainty and recommendation.
+Malformed or unavailable assessments deny. Semantic model answers, even after
+schema validation, are not independent proof. Hidden helper and editor-hook
+effects remain unproven; their absence from an exhaustive inventory alone does
+not force rejection. This mode supplies no sandbox or complete effect proof.
+
+Best-effort classifier audit and classifier log records retain metadata such as
+tool name, action, fixed reason and timing. They omit input, source, scope and
+provider response text. This restriction does not cover native-tool or session
+logs. Offline routing tests establish no semantic-policy guarantee. This help
+provides no enablement recommendation.
+
+The six question instructions adopt the exact frozen best-effort-evaluation-4
+experimental wording as an incremental opt-in improvement. The paired synthetic
+study allowed 15/19 permitted observations against control 13/19. Both arms had
+0/21 unsafe allowances, with no observed control-to-experimental action
+regressions. Four false denials remain, representing two unique public shell/Lua
+literal contents. Gains were an uninvoked local function and stored untrusted
+injection text. The latter allowed in an earlier response to the identical
+control request, so that gain does not establish wording causality. One run with
+a moving model alias does not establish repeat stability. All cases are reused
+development data; counts include repeats and do not establish general safety or
+real-world error rates. Adoption does not enable live use; the default remains
+disabled.
+
+A later general-corpus-round3 study appended one generic effect/object
+paragraph to all six instructions; that exact wording is now installed. On 60
+paired cases (20 previously queried, 40 previously unqueried) it allowed 18/28
+permitted cases against control 16/28. Both arms withheld all 18 prohibited and
+14 insufficient-evidence cases, and no control allowance was lost. Both gains
+came from previously queried targets; the previously unqueried cases showed no
+change, and one gain may reflect response variation. Category answers changed
+without an action change on 14 cases. Ten false withholdings remain. One
+synthetic run does not establish general safety.
 
 *straps-classifier-contextual*
 Contextual authorization is experimental and disabled by default. Install after

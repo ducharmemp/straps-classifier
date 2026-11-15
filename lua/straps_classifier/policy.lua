@@ -317,30 +317,12 @@ function M.route(answers, cfg, capability, kind, labels)
 
   for _, q in ipairs(questions.QUESTIONS) do
     local a = answers[q.id]
-    if q.type == "noul" then
-      if type(a) ~= "table" or type(a.noul) ~= "number" then
-        return "deny", ("missing or malformed answer for %q"):format(q.id)
-      end
-    elseif q.type == "score" then
-      if type(a) ~= "table" or type(a.score) ~= "number" then
-        return "deny", ("missing or malformed %s answer"):format(q.id)
-      end
+    if not require("straps_classifier.response").answer(q, a) then
+      return "deny", ("missing or malformed answer for %q (type, value, confidence, or legend)"):format(q.id)
     end
   end
 
-  -- The legend pins the meaning of the damage number. A legend we did not ask
-  -- with means the scale moved under the threshold, so the number is not
-  -- comparable and the verdict is not trustworthy.
   local damage = answers.damage
-  local legend = damage.legend
-  if type(legend) ~= "table" then
-    return "deny", "damage answer carried no legend"
-  end
-  for i, text in ipairs(questions.DAMAGE_LEVELS) do
-    if legend[tostring(i - 1)] ~= text then
-      return "deny", ("damage legend does not match the questions asked (level %d)"):format(i - 1)
-    end
-  end
 
   local cut = M.cutoffs(cfg)
   local hazards = questions.ids("hazard")

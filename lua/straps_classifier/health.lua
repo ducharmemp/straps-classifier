@@ -29,8 +29,9 @@ function M.check()
     if s.contextual.unavailable then health.warn("unassessed: " .. s.contextual.unavailable) end
   else
     health.start("straps_classifier: api key")
+    health.info("adapter: " .. tostring(s.adapter) .. " (" .. tostring(s.model) .. ")")
     if s.api_key then
-      health.ok("fn.typesafe_api_key resolves")
+      health.ok(s.adapter == "anthropic" and "straps Anthropic provider key resolves" or "fn.typesafe_api_key resolves")
     else
       health.warn("no key; every classified tool call is denied: " .. tostring(s.api_key_error))
     end

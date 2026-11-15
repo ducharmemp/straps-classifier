@@ -35,6 +35,58 @@ local function answers(p, score, conf)
   return out
 end
 
+describe("malformed command answers", function()
+  local invalid = {
+    { "missing" }, { "string", "0.1" }, { "boolean", false }, { "NaN", 0 / 0 },
+    { "infinity", math.huge }, { "negative infinity", -math.huge }, { "negative", -0.01 }, { "above one", 1.01 },
+  }
+  for _, id in ipairs(questions.ids()) do
+    for _, case in ipairs(invalid) do
+      it(id .. " rejects " .. case[1] .. " even with thresholds disabled", function()
+        local a = answers(0.01, 0)
+        a[id].noul = case[2]
+        local action = policy.route(a, { deny_threshold = 1.1, damage_deny = 99, opaque_action = "log" }, "edit")
+        assert.equals("deny", action)
+      end)
+    end
+    for _, tag in ipairs({ "missing", "wrong" }) do
+      it(id .. " rejects " .. tag .. " type", function()
+        local a = answers(0.01, 0)
+        a[id].type = tag == "wrong" and "score" or nil
+        assert.equals("deny", policy.route(a, CFG, "edit"))
+      end)
+    end
+  end
+  for _, field in ipairs({ "score", "confidence" }) do
+    for _, case in ipairs(invalid) do
+      if field ~= "score" or case[1] ~= "above one" then
+        it("damage rejects " .. case[1] .. " " .. field, function()
+          local a = answers(0.01, 0)
+          a.damage[field] = case[2]
+          assert.equals("deny", policy.route(a, { deny_threshold = 1.1, damage_deny = 99 }))
+        end)
+      end
+    end
+  end
+  it("damage rejects a score above the rubric even with thresholds disabled", function()
+    local a = answers(0.01, 0)
+    a.damage.score = #questions.DAMAGE_LEVELS
+    assert.equals("deny", policy.route(a, { deny_threshold = 1.1, damage_deny = 99 }))
+  end)
+  for _, tag in ipairs({ "missing", "wrong" }) do
+    it("damage rejects " .. tag .. " type", function()
+      local a = answers(0.01, 0)
+      a.damage.type = tag == "wrong" and "noul" or nil
+      assert.equals("deny", policy.route(a, CFG))
+    end)
+  end
+  it("damage rejects extra legend entries", function()
+    local a = answers(0.01, 0)
+    a.damage.legend.extra = "unrequested"
+    assert.equals("deny", policy.route(a, CFG))
+  end)
+end)
+
 it("a quiet battery is ok", function()
   local action, reason = policy.route(answers(0.02, 0.1), CFG)
   assert(action == "ok", "want ok, got " .. action .. ": " .. reason)

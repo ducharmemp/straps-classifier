@@ -5,7 +5,8 @@ Jev. A call rated dangerous is blocked, even when you approved it.
 
 An experimental contextual mode is disabled by default. Its explicit bootstrap,
 current limitations, and release gates are described under [Contextual opt-in](#contextual-opt-in).
-The strict-mode behavior below applies when `contextual` is absent or `false`.
+A separate [best-effort opt-in](#best-effort-opt-in) assesses existing tools against startup operator scope.
+Both modes default to `false` and are mutually exclusive. Legacy strict behavior remains unchanged when both are absent or `false`.
 
 The classifier can veto and cannot approve. Permission comes from you, from a
 `:StrapsAuto` grant you made, or — in a subagent — from the grant set its parent
@@ -13,26 +14,88 @@ gave it. This plugin only ever takes permission away.
 
 ## What happens on a strict-mode tool call
 
-1. The classifier rates the call. straps runs its guards before `hook.confirm`
-   (`gate_tool` in straps' `registry.lua`), so the request to TypeSafe goes out
-   before you see a dialog. The verdict is held; it is not shown yet.
-2. You decide: the confirm dialog, or silently through a `cap:` grant in auto
-   mode. A no ends the call and discards the verdict.
-3. On a yes, the held verdict is enforced. A dangerous rating blocks the call
-   with `blocked by hook.confirm: classifier: <reason>`, naming the question
-   that fired.
+1. The guard clears any stale verdict and checks deterministic local prohibitions
+   before requesting a TypeSafe rating. Every result other than `ok` blocks in
+   the guard, in root, child, and fork sessions, before any confirmation dialog.
+   The refusal reads `blocked by hook.guard.classifier: classifier: <reason>`.
+2. An `ok` verdict is held for the exact call. Your dialog or existing grant
+   decides permission; an `ok` rating cannot grant it. A no discards the verdict.
+3. The chained `hook.confirm` consumes the held verdict after your approval.
+   A missing verdict blocks with `blocked by hook.confirm: classifier: <reason>`.
 
-All child and fork scopes reject a dangerous rating in the guard at step 1,
-reading `blocked by hook.guard.classifier: classifier: <reason>`, before confirm.
-Scopes with `allow` or `readonly` do not prompt. Ungated scopes retain
-`hook.confirm` and can prompt for calls with safe ratings; the held verdict
-then reaches step 3.
-
-In parentless sessions, the verdict is enforced after your decision. Auto mode
-also reaches this enforcement step. The request itself happens first, so a call you reject has
-still been sent to TypeSafe. When a request takes longer than 500 ms,
+Scopes with `allow` or `readonly` use their own confirmation policy without a
+prompt; the guard enforces the classifier veto before that policy runs. Ungated
+scopes retain the chained confirmation. Auto grants cannot bypass a guard veto.
+A call you reject at the dialog has already passed classification and may have
+been sent to TypeSafe. When a request takes longer than 500 ms,
 `straps_classifier: classifying <tool>…` shows in the message area until it
 returns.
+
+## Best-effort opt-in
+
+Best-effort classification is disabled by default (`best_effort = false`). It assesses existing tools against operator scope supplied at trusted startup. It supplies no sandbox or complete proof of effects. Hidden helpers and editor hooks remain unproven; validated semantic model answers are not independent proof. This section documents the configuration without recommending enablement.
+
+The six question instructions adopt the exact frozen `best-effort-evaluation-4` experimental wording as an incremental opt-in improvement. In that paired synthetic study, experimental wording allowed 15/19 permitted observations against control 13/19. Both arms had 0/21 unsafe allowances, with no observed control-to-experimental action regressions. Four false denials remain, representing two unique public shell/Lua literal contents. The paired gains were an uninvoked local function and stored untrusted injection text. The latter already allowed in an earlier response to the identical control request, so that gain does not establish wording causality. One run with a moving model alias does not establish repeat stability. All cases are reused development data; counts include repeats and do not establish general safety or real-world error rates. No automatic live enablement follows from adoption; the default remains disabled.
+
+A later `general-corpus-round3` study appended one generic effect/object paragraph to all six instructions; that exact wording is now installed. On 60 paired cases (20 previously queried targets, 40 previously unqueried), it allowed 18/28 permitted cases against the evaluation4 control's 16/28. Both arms withheld all 18 prohibited and 14 insufficient-evidence cases, and no case the control allowed was withheld. Both gains, `b-message-d01` and `b-browser-d02`, came from previously queried targets; the 40 previously unqueried cases showed no change. `b-browser-d02` was allowed by one earlier control run and withheld by another, so that gain may reflect response variation. The candidate also changed category answers without changing the action on 14 cases, including new `protection_tampering = present` answers on four. Ten false withholdings remain. This is one synthetic classification run and does not establish general safety.
+
+Call `require("straps").setup()` first, then configure the classifier before any session opens or guards freeze. Best-effort and contextual modes are mutually exclusive. The configuration is frozen; changing mode, scope or other settings requires restart.
+
+The following is a shape reference. The acknowledgment variables must reflect the operator's decisions; this example grants no approval:
+
+```lua
+require("straps_classifier").setup({
+  model = selected_typesafe_model,
+  best_effort = {
+    enabled = true,
+    acknowledge_risk = operator_acknowledged_risk,
+    disclosure_approved = operator_approved_disclosure,
+    operator_scope = reviewed_operator_scope,
+    prohibitions = reviewed_operator_prohibitions,
+    max_request_bytes = 65536,
+  },
+})
+```
+
+| Option | Requirement |
+| --- | --- |
+| `enabled` | Must be `true`. |
+| `acknowledge_risk` | Must be `true`; accepts the absence of complete effect proof. |
+| `disclosure_approved` | Must be `true`; approves provider transmission described below. |
+| `operator_scope` | Required nonempty string containing startup authority. |
+| `prohibitions` | Optional list of nonempty strings adding prohibitions. |
+| `max_request_bytes` | Optional integer from 1024 to 1048576; default 65536. Bounds the serialized request. |
+| `adapter` | Optional table selecting the assessing model; omit it for TypeSafe. See below. |
+
+### Choosing the adapter
+
+`adapter` picks which model answers the six questions. The questions, routing and fail-closed rules are the same for both.
+
+| `adapter` | Model | Credential | Timeout |
+| --- | --- | --- | --- |
+| omitted, or `{ name = "typesafe" }` | top-level `model` (default `jev-latest`) | `fn.typesafe_api_key` | top-level `timeout_ms` |
+| `{ name = "anthropic" }` | `adapter.model` (default `claude-sonnet-5`) | the straps Anthropic provider key and base URL | `adapter.timeout_ms` (default 30000) |
+
+For `anthropic`, `adapter.max_tokens` (default 4000, range 1000–32000) bounds the response, including the model's reasoning. `adapter.timeout_ms` ranges from 1000 to 120000. The adapter sends one request to `/v1/messages` with the straps Anthropic credentials (`:StrapsLogin anthropic` or `$ANTHROPIC_API_KEY`) and makes no retry. A response that stops before finishing, carries no text answer, omits a question or names an unknown choice counts as unavailable and denies. `status()` and `:checkhealth straps_classifier` report the selected adapter and whether its credential resolves.
+
+```lua
+best_effort = {
+  enabled = true, acknowledge_risk = ..., disclosure_approved = ...,
+  operator_scope = ..., adapter = { name = "anthropic" },
+}
+```
+
+Selecting `anthropic` sends the request described below to Anthropic instead of TypeSafe, so `disclosure_approved` must cover that provider. Evidence so far: on the 15-case probe of the print-only operations TypeSafe withholds, Sonnet 5 allowed all 30 permitted observations and denied all 15 near-miss observations (`sonnet-probe/REPORT.md`). That probe covers one scenario type and does not establish Sonnet's behavior on the full corpus. One timed call took about 6 s, so the TypeSafe default timeout of 8 s is too short for this adapter.
+
+Startup scope is standing authority for **all sessions in that Neovim**. Agent tasks, transcript text, tool results and approval claims in operation data cannot extend it. Other guards, child permission ceilings, confirmation and `:StrapsAuto` grants remain independent. A favorable classifier verdict grants no permission. Mandatory prohibitions and operator prohibitions take precedence over grants. Best-effort replaces the legacy categorical patterns and hazard thresholds, including the separate strict-mode `ask_user` battery, with scope and prohibition assessment.
+
+The default TypeSafe adapter uses the configured top-level `model` (default `jev-latest`), `endpoint` and `timeout_ms`. Each adapter makes one transport attempt regardless of `retry`. The request includes full tool input, registered definition source, working directory, startup scope and prohibitions. Oversized requests deny without truncating executable input or source. The classifier adds no transcript or environment values.
+
+Provider transmission happens **before operator confirmation**, including for a call the operator later refuses. Approval covers submitted input, source and scope; those fields can contain secrets. The classifier cannot reliably identify arbitrary secrets before transmission. Avoid submitting secrets.
+
+Allow requires favorable model answers for authority, prohibitions, credential disclosure, protection tampering, material uncertainty and recommendation. Missing or malformed assessments deny. Unknown hidden helpers alone do not force rejection, so an allow does not prove their behavior.
+
+Best-effort classifier audit and classifier log records retain metadata such as tool name, action, fixed reason and timing. They omit input, source, scope and returned provider text. This restriction applies only to classifier records; native tools and session logging can retain sensitive content. Offline routing tests do not establish semantic-policy guarantees.
 
 ## Contextual opt-in
 
@@ -203,6 +266,21 @@ response, or a call arriving through a path where the classifier cannot run all
 block. There is no configuration that turns a veto into a warning. Uninstalling
 is the off switch.
 
+Transport rejects nonzero process exits or signals, even with a successful HTTP
+status and plausible answers. Response envelopes indicating error, refusal,
+incompleteness, or unsuccessful status deny. Required answer IDs must match the
+request exactly, and each answer must match its requested type. Noul values must
+be finite and within [0,1]. Scores must fit the requested rubric, match its exact
+legend, and carry finite confidence within [0,1]. Choices must name a requested
+option and carry finite confidence within [0,1]. Optional response distributions
+remain unused and unvalidated.
+
+These checks change no hazard or direct `ask_user` thresholds, permission grants,
+or `ask_user` behavior. Deterministic local prohibitions precede model judgment.
+Synthetic probes do not qualify the classifier for safety. Duplicate JSON keys,
+transport response byte bounds, the provider's actual refusal format, and
+contextual policy calibration remain parked.
+
 ## What it asks
 
 One request per tool call, carrying eleven yes/no hazard questions, one signal,
@@ -367,8 +445,9 @@ A second `:StrapsClassifierAudit` focuses the window already showing the audit.
 `<CR>` shows the record in `straps://classifier/record/<seq>` and reuses one
 record window.
 
-Every verdict, allow or deny, keeps the state it was judged on and the answers
-it got, so an allow that looks wrong reads back the same way a deny does. The
+In strict mode, every verdict, allow or deny, keeps the state it was judged on
+and the answers it got. Best-effort records retain only the metadata described
+under [Best-effort opt-in](#best-effort-opt-in). The
 ring holds `audit_limit` entries per session (default 500) and survives the
 session buffer closing.
 
@@ -476,10 +555,11 @@ than looping.
 ## Where it does not reach
 
 A granted `lua` or `exec` capability is full-privilege Lua in the same process,
-and straps documents that ceiling itself. Tool calls made directly through
-`registry.call("tool.*")` — from a hook body, or from `eval_lua` — carry no `ctx`
-to await on, so they cannot be classified; they are denied outright, which closes
-the bypass but does not make the ceiling disappear. The `redefines_protected`
+and straps documents that ceiling itself. Tool calls made through
+`registry.call("tool.*")`, including calls from a hook body or `eval_lua`, may
+supply or inherit an execution context. The classifier evaluates calls with an
+await context and denies every non-`ok` result. Calls without a context that
+provides `await` are denied. These checks do not remove the ceiling. The `redefines_protected`
 question and the pattern rules raise the cost of an `eval_lua` that reaches for
 the classifier's own entries, and the config is frozen at `setup()`, but an
 agent with unrestricted `lua` is still operating below the classifier. It is
@@ -490,6 +570,7 @@ The classifier is a check on an agent doing something rash. It is not a sandbox.
 ## Tests
 
 ```sh
+busted tests/response_spec.lua            # transport and response validation
 busted tests/policy_spec.lua              # pure routing
 busted tests/local_rules_spec.lua         # pattern rules
 busted tests/guard_spec.lua               # the guard

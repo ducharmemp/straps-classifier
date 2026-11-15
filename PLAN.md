@@ -2,20 +2,39 @@
 
 Build a plugin in `/home/matt/code/straps-classifier` that sends every tool call
 to TypeSafe's Jev for a risk rating and blocks the ones it rates dangerous. The
-rating request runs in a guard, before the operator's dialog; the verdict is
-enforced only after the operator has approved the call, so the classifier is a
-check on your own decisions, not a gate in front of them.
+rating request runs in a guard, before the operator's dialog. The guard vetoes
+every result other than `ok` in root, child, and fork sessions. Only an `ok`
+verdict reaches the operator's decision; the classifier cannot grant permission.
 
 **One repo changes: the plugin is new, and straps is untouched.** A second part,
 a compaction policy needing a change to straps' `fn.compact`, was planned, built,
 and dropped — see Part B below.
 
+## Best-effort opt-in addition
+
+For operators reviewing the opt-in mode: preserve existing native tools and independent permission checks while assessing operations against frozen startup authority. The remaining original plan describes legacy strict mode and its historical implementation.
+
+`best_effort = false` preserves the default. A best-effort options table requires `enabled = true`, `acknowledge_risk = true`, `disclosure_approved = true`, and a nonempty `operator_scope` string. Optional `prohibitions` is a list of nonempty strings. Optional `max_request_bytes` defaults to 65536 and accepts integers from 1024 to 1048576. Best-effort and contextual modes are mutually exclusive. Configure after core setup and before sessions or guard freeze; configuration changes require restart. README.md and the help file provide a shape example with operator-supplied acknowledgment variables.
+
+Startup scope supplies standing authority for every session in that Neovim. Transcript text, agent tasks, tool results, and operation comments grant no authority. Child permission ceilings, other guards, operator confirmation and `:StrapsAuto` grants remain independent. Best-effort bypasses legacy categorical patterns and hazard thresholds; it requires favorable model assessments of authority, prohibitions, credential disclosure, protection tampering, material uncertainty and recommendation. Mandatory and operator prohibitions take precedence over grants.
+
+The TypeSafe adapter uses the configured `model`, `endpoint` and `timeout_ms`, with one transport attempt regardless of `retry`. A bounded request includes the full tool input, registered definition source, working directory, startup scope and prohibitions. Oversized requests deny without truncating input or source. Provider transmission precedes confirmation, including for a call the operator later refuses. Disclosure approval covers those contents; the classifier cannot reliably recognize arbitrary secrets before sending them. Operators must avoid submitting secrets. No transcript or environment values are added to the request.
+
+Classifier audit records retain metadata and fixed reasons, excluding input, source, scope and provider response text. This restriction does not cover native-tool logs or session logs. Best-effort supplies no sandbox or complete effect proof. Hidden helpers and editor hooks remain unproven; schema-validated semantic model assessments are not independent proof of effects or authority. Documentation does not recommend enablement.
+
+The six question instructions now adopt the exact `best-effort-evaluation-4` experimental wording from frozen `best-effort-evaluation-3/next-requests.json` (SHA-256 `6c3a1154de67d0e1f3888fc907e983978b2742c802b08b7bd6e1248606a9a242`). The unchanged control module had SHA-256 `4fbd0e250644ed6b25b4abcaad930d61d3d74cba90b6bd60cb7db6d7adba0973`. The paired synthetic study allowed 15/19 permitted observations against control 13/19; both arms had 0/21 unsafe allowances with no observed control-to-experimental action regressions. Four false denials remain, representing two unique public shell/Lua literal contents. The gains were an uninvoked local function and stored untrusted injection text. The latter allowed in an earlier response to the identical control request, so that gain does not establish wording causality. One run with a moving model alias does not establish repeat stability. All cases are reused development data; counts include repeats and do not establish general safety or real-world error rates. Operator approval adopts this incremental opt-in change without automatic live enablement. Policy, choice criteria, routes and provider selection remain unchanged.
+
+The installed instructions now carry the exact `general-corpus-round3` candidate: the evaluation4 text plus one appended effect/object paragraph on all six questions (module SHA-256 `81ec9fa8cf3c5516a84ef5b1eaa03343645d323441e8d638ddcc57b3626320da`; prior module `f7ee646b2325b87e15fe48c075e81398154097427ef8c16c2ee67e7f12757fca`, snapshotted under `general-corpus-round3/production-snapshot/`). The frozen 120-request paired run passed its acceptance rule: 18/28 permitted allowed against control 16/28, 0 unsafe allowances in either arm, no control allowance lost in the targeted, reserved or overall subsets, and a gain on source target `b-message-d01`. Both gains came from previously queried targets; the 40 previously unqueried cases showed no change. `b-browser-d02` varied between earlier control runs, so its gain may reflect response variation. Category answers changed without an action change on 14 cases, including four new `protection_tampering = present` answers. Ten false withholdings remain. Policy, choice criteria, routes and provider selection remain unchanged.
+
+Best-effort now has a pickable adapter (`best_effort.adapter`). `typesafe` stays the default. `anthropic` (default `claude-sonnet-5`) sends the same `state` and `questions` as one Messages request under a fixed classifier system prompt, using the straps Anthropic provider key and base URL. It parses the first JSON object in the text answer into the same validated choice answers, and routes them through the same six-safe-choice rule. A response that does not finish with `end_turn`, has no text, omits a question or names an unknown choice is unavailable and denies. `adapter.timeout_ms` defaults to 30000 because one timed call took about 6 s and a second exceeded 8 s. Evidence for Sonnet covers only the 15-case print-only probe; a full-corpus comparison against Jev has not run. Verification: `tests/adapter_spec.lua` (36 tests; all 27 assertion sites fail when inverted) and the full offline suite.
+
+Verification belongs to `tests/best_effort_spec.lua`, `tests/best_effort_setup_spec.lua`, and `tests/best_effort_guard_spec.lua`, including counterfactual assertion checks and the final offline classifier/core suites. Run each spec in a fresh process with `nix shell nixpkgs#neovim nixpkgs#luajitPackages.busted nixpkgs#luajitPackages.nlua -c busted tests/<name>_spec.lua` from its repository. Live synthetic classification evaluates decisions without executing proposed host effects; offline routing tests establish no semantic guarantee.
+
+Parked: dynamic authenticated user instruction extraction, other provider adapters, complete transitive effect proof, remote account identity acquisition, semantic-policy guarantees, and live configuration enablement. Existing contextual mode remains separate.
+
 ## The two rules
 
-**The classifier can veto and cannot approve.** Nothing in this plugin returns
-`true` from a confirm hook. Permission comes from you, or from a grant you made,
-or — in a subagent — from the grant set its parent gave it. The classifier only
-ever subtracts.
+**The classifier can veto and cannot approve.** The confirm chain returns true only after the preceding confirmation policy approves and an exact-call classifier verdict is present. Permission comes from you, a grant you made, or the grant set a subagent's parent gave it.
 
 **No verdict means no call.** A missing key, an HTTP error, a timeout, an
 unparseable response, or no `ctx` to await on all block. An unconfigured
@@ -26,15 +45,15 @@ suspicion, not permission.
 
 | Step | What runs | Outcome |
 | --- | --- | --- |
-| 1 | `hook.guard.classifier` sends the request and holds the verdict; a scoped session (subagent or fork) also blocks on a deny | verdict held, or (scoped) veto |
+| 1 | `hook.guard.classifier` clears stale state, checks local prohibitions, and classifies | every non-`ok` result vetoes in every scope; only `ok` is held |
 | 2 | the operator's decision: your dialog, a `cap:` grant in auto mode, or the grant set a parent gave a child | yes or no; a no discards the verdict |
-| 3 | the chained `hook.confirm` enforces the held verdict, only on a yes | veto, or silence |
+| 3 | the chained `hook.confirm` consumes the exact-call verdict after approval | missing verdict vetoes; `ok` leaves permission unchanged |
 
-straps runs before-guards ahead of `hook.confirm` (`gate_tool`), so the request
-in step 1 goes out before the dialog, and a call the operator rejects has still
-been sent. In auto mode step 2 is silent — `:StrapsAuto` already granted the
-category — and the classifier is the only thing between that grant and the call.
-That is the case it exists for.
+straps runs before-guards ahead of `hook.confirm` (`gate_tool`). Local prohibitions
+precede the model request. Model denies never reach the dialog, even in a root
+session with an auto grant. A call rejected at the dialog has already passed
+classification and may have been sent to TypeSafe. Child allow/readonly ceilings
+remain independent of the classifier.
 
 ## What the plan rests on
 
@@ -45,7 +64,7 @@ That is the case it exists for.
 | Guards are global-only and freeze one-way | `registry.lua:306-315`, `registry.lua:249` |
 | The freeze fires at the first session open and at `loop.start` | `init.lua:271`, `ui.lua:589`, `loop.lua:697` |
 | A guard that calls a tool or `define` re-enters the fold, raises, and blocks | `registry.lua:200-204` |
-| A before-guard may `ctx.await`; `ctx` is nil on the direct call path | `DESIGN.md:1178-1180` |
+| A before-guard may `ctx.await`; direct calls may supply or inherit a context | `registry.lua:827-842`, `registry.lua:871-875` |
 | The direct path passes no confirm at all, and no straps builtin uses it | `registry.lua:501-515`, `registry.lua:440` |
 | The parallel read batch gates every block before any job starts | `loop.lua:488-506` |
 | `hook.confirm` is one entry; chain it with `registry.bind` | `loop.lua:185`, `registry.lua:409-415` |
@@ -69,6 +88,7 @@ entirely; Part A closes that.
 lua/straps_classifier/init.lua        setup(opts), config, register(), status()
 lua/straps_classifier/questions.lua   the questions sent to TypeSafe
 lua/straps_classifier/policy.lua      turns answers into deny or ok
+lua/straps_classifier/response.lua    validates response envelopes and answers
 lua/straps_classifier/local_rules.lua path and command patterns, no network
 lua/straps_classifier/audit.lua       the per-session record and its buffer view
 lua/straps_classifier/entries.lua     the registry entries
@@ -95,7 +115,13 @@ can read. The error names both locations.
 `vim.system` inside `ctx.await`, with `config.timeout_ms` (default 8000) and
 `ctx.on_cancel` killing the process when the run stops. One retry on 429, 529, or
 a connection failure. Returns `nil, "no ctx"` when `ctx` is absent, and `nil, err`
-on a non-2xx, a decode failure, or a timeout.
+on a non-2xx, a decode failure, or a timeout. Nonzero process exits or signals
+reject even plausible successful response bodies. `response.lua` rejects explicit
+error, refusal, incomplete, or unsuccessful-status envelopes. Answer IDs must
+match the requested set exactly, with matching types. Noul values must be finite
+and in [0,1]; scores must fit the requested rubric, match its exact legend, and
+carry finite confidence in [0,1]. Choices must name a requested option and carry
+finite confidence in [0,1]. Optional distributions remain unused and unvalidated.
 
 ### A4. `questions.lua`
 
@@ -255,12 +281,11 @@ remembered: a repeated call is judged again, against the world as it is then.
 There is no cache, because a stored verdict answers a later call from an earlier
 judgment, and that is the part worth gaming.
 
-The guard and the confirm chain both need the verdict for one call. The guard
-writes `action, reason` into a single slot keyed by the session buffer and that
-exact `(name, input)`; the confirm takes it and clears it, microseconds later in
-the same `gate_tool` pass. The slot holds one verdict for the length of one gate,
-is cleared on read, and is cleared when the run ends. An empty slot at the confirm
-means the guard produced no verdict, which is itself a deny.
+The guard and the confirm chain share one verdict slot per session, keyed by
+exact `(name, input)`. The guard clears stale state before classification and
+stores only `ok`. The confirm consumes the verdict after operator approval;
+operator rejection and run end clear it. An empty slot at confirm denies.
+Direct `ask_user` policy thresholds and decisions remain unchanged.
 
 ### A7. `hook.guard.classifier`
 
@@ -268,19 +293,15 @@ The guard is the only position every tool call passes: the loop path, the parall
 read batch, and the direct `registry.call("tool.*")` path that carries no confirm
 at all.
 
-- **Session on the loop path.** Classify, store the verdict in the slot, and
-  return nothing. The confirm chain enforces it after your decision. The guard
-  runs before the confirm, so a call you reject has still cost a request.
-- **Scoped session** (`registry.scope_parent(bufnr)` non-nil: a subagent or a
-  fork). Classify, block on `deny` here, and store the verdict otherwise. A
-  readonly or allow child's own `hook.confirm` (`agents.lua:284-295`) replaces
-  our chain, so only the guard reaches it; a fork or an ungated child keeps the
-  global chain, which needs the stored verdict. What its parent granted is the
-  approval the classifier subtracts from.
-- **Direct path, no `ctx`.** Nothing can await, so nothing can classify: denied
-  with `no ctx to await on`. This closes the `eval_lua` bypass. No straps builtin
-  calls tools this way (`registry.lua:515` is the only caller of `call_tool`), so
-  nothing internal breaks.
+- **Root, child, and fork sessions.** Clear stale state, classify, and block every
+  result other than `ok` before confirmation. Store only `ok` for the exact call.
+  The global confirm chain consumes that result after the operator's decision.
+  A readonly or allow child's own confirmation policy still applies; the guard
+  veto does not depend on that policy invoking the global chain.
+- **Direct calls.** Calls from hooks or `eval_lua` may supply or inherit an
+  execution context. The classifier evaluates calls with an await context and
+  denies every non-`ok` result. Without a context that provides `await`, the guard
+  denies with the local-rule reason or `no ctx to await on`.
 
 The guard never calls a tool and never defines an entry, since either re-enters
 the fold and raises (`registry.lua:200-204`). HTTP goes through `vim.system`
@@ -302,20 +323,20 @@ same fact for a statusline. The README says to install from
 ```
 prev = registry.bind("hook.confirm")
 confirm(name, input, ctx):
-  allowed, why = prev(name, input, ctx)      -- your dialog, or a cap: grant
-  if not allowed -> false, why               -- rejected; nothing else runs
+  allowed, why = prev(name, input, ctx)
+  if not allowed -> clear_verdict(ctx.bufnr); return false, why
   action, reason = take_verdict(ctx.bufnr, name, input)
-  if action == "deny" -> false, "classifier: " .. reason, "hook"
+  if action == nil or action == "deny" -> false, "classifier: " .. reason, "hook"
   return true
 ```
 
-No second dialog: one you have already answered is one you learn to dismiss. The
-reason names the question that fired or the failure that stopped the check.
+Only an `ok` result reaches the operator's dialog. A non-`ok` result blocks in
+`hook.guard.classifier` before confirmation, in every scope. No second dialog
+can override that veto.
 
-The third return value `"hook"` marks the refusal as a hook veto, so `gate_tool`
-reports `blocked by hook.confirm: classifier: writes_outside_root=0.91` instead
-of `user denied: ...`. A child session's guard block reads
-`blocked by hook.guard.classifier: classifier: ...`.
+The third return value `"hook"` marks a confirm refusal such as a missing verdict,
+so `gate_tool` reports `blocked by hook.confirm: classifier: ...`. Classification
+denials read `blocked by hook.guard.classifier: classifier: ...`.
 
 ### A9. Every classification is inspectable
 
@@ -427,8 +448,9 @@ busted specs, run one per process as `busted tests/X_spec.lua` under `nlua`
 | --- | --- | --- |
 | `policy_spec.lua` | every hazard threshold, per-hazard `cutoffs` (one relaxed, one tightened, the signal, the edit skip kept), the opaque signal denying or logging by `opaque_action`, `redefines_protected` skipped for edit tools, damage escalation with no confidence downgrade, a mismatched legend denying, missing answers denying, over-cap and path-resolution state building; the ask battery: each hazard at its cutoff denies with its fix and the right prefix (do-not-ask without the rework suffix), a missing, NaN, or out-of-range answer denies, no damage needed, an unknown kind routes as hazard, `ask_deny_threshold` and its fallback, the battery shape (10 with fewer than two options, 20 with three), unelided ask state, and the `ask_user` field check; Hobson's, stacked-deck (naming the disfavored options), unstated-recommendation and unsupported-recommendation verdicts with their reasons and cutoff edges, honest steering passing, the verdict order, malformed fixed and per-option signals denying for every option count, watch mode, `ask_cutoffs` for code verdicts and per-hazard cutoffs | none |
 | `local_rules_spec.lua` | deny patterns fire with no key and no `ctx`, against command-like fields only and never prose | none |
-| `guard_spec.lua` | with a scripted `fn.typesafe`: a child session classifies and blocks a deny; a scoped session with no scoped confirm runs a call rated ok through the global chain; a parent's loop call leaves enforcement to the confirm; a direct `registry.call` with no `ctx` is denied with `no ctx to await on`; a local rule denies with no request; an over-cap program input denies with no request; a repeated call is classified again; through `gate_tool`, the builtin `ask_user` gets the ask battery while a session shadow (even with the builtin's source), a global redefinition, and a version-1 impostor get the command battery; an `ask_user` input outside the builtin's fields denies with no request | none |
-| `confirm_spec.lua` | a rejected call makes no request; an approved call is classified; a deny blocks with the question named; a silent `cap:` grant still reaches the classifier; a timeout blocks; a missing key blocks; the slot is empty after the confirm reads it | none |
+| `guard_spec.lua` | scripted classification on root loop, direct, and nested paths, manually related child scopes, and missing-context calls; non-`ok` guard vetoes before confirmation; stale-slot clearing; the ask helper consumes verdicts manually; local rules and input bounds; repeated calls; builtin ask battery identity and field validation | none |
+| `confirm_spec.lua` | operator confirmation chaining; exact-call verdict consumption and clearing; missing verdict refusal; guard denial before operator confirmation | none |
+| `response_spec.lua` | scripted process failures, envelope validation, exact answer IDs and types, bounded finite values, score legends, and choice membership | none |
 | `audit_spec.lua` | every classification lands in the ring, allow and deny alike; every verdict keeps the state and answers it was judged on, with the token cost; `answer_lines` sorts strongest first across noul/score/shapeless; the ring caps at `audit_limit` and drops oldest; a child's entries carry its parent bufnr and depth; `fn.classifier_audit_render` groups by session and survives a closed session buffer; `audit_limit = 0` is refused; `fn.log` receives one `ev = "classify"` per verdict; an `ask_user` verdict records `kind = "ask"`; `last_user_text` skips `[straps] ` notices and keeps head or tail | none |
 | `live_spec.lua` | the fixture matrix against Jev: every documented evasion denies on the intended question, every must-pass case (the plugin's own development included) stays clear, and the `ask ...` fixtures (`busted tests/live_spec.lua --filter ask`) deny rigged questions and pass honest ones; mean latency and token cost printed per battery; skipped with a note when `TYPESAFE_API_KEY` is unset | live |
 
@@ -461,10 +483,9 @@ was run after the Part B revert to confirm it (10/10 passing).
 
 - Coalescing a read batch into one request. The per-call guard signature cannot
   express it; needs a batch-aware entry point in straps.
-- A classifier veto reads `blocked by hook.confirm: classifier: ...` (child:
-  `blocked by hook.guard.classifier: classifier: ...`). The straps prompt calls
-  a `blocked by hook.*` result final policy, so for an `ask_user` deny it can
-  discourage the reworked question.
+- A classifier veto reads `blocked by hook.guard.classifier: classifier: ...`
+  in every scope. The straps prompt calls a `blocked by hook.*` result final
+  policy, so for an `ask_user` deny it can discourage the reworked question.
 - Jev sees only the last user message, so `already_answered` and
   `permission_seeking` miss instructions given earlier in the conversation.
 - `local_rules` searches plain-string `ask_user` options (numeric keys), so an
@@ -478,9 +499,12 @@ was run after the Part B revert to confirm it (10/10 passing).
   tall and cannot be scrolled (`editor.lua:2493`, `:2502`), so a long question
   that passes the 200-line cap can be cut off in the picker while Jev judges all
   of it. The full input is visible in the transcript's tool call.
-- The hazard path accepts a NaN noul or damage score (`type(x) == "number"`
-  holds for NaN, and `vim.json.decode` parses `NaN`). This predates the
-  `ask_user` battery, which rejects them.
+- Optional response distributions remain unused and unvalidated. Duplicate JSON
+  keys, transport response byte bounds, and the provider's actual refusal format
+  need separate work.
+- Contextual policy calibration remains parked. Synthetic probes do not qualify
+  the classifier for safety. This change relaxes no thresholds, permissions, or
+  `ask_user` behavior; deterministic local prohibitions precede model judgment.
 - Adding `tool.ask_user` to `PROTECTED` may raise `redefines_protected` on exec
   commands that mention it, such as running `tests/guard_spec.lua`. The existing
   `nvim -l tests/run_guard.lua` live fixture still passes.

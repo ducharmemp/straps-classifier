@@ -1,5 +1,5 @@
 {
-  description = "straps-classifier — tool calls rated before confirmation; scoped denials enforced by the guard";
+  description = "straps-classifier — tool-call risk classification with guard vetoes before confirmation in every scope";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
