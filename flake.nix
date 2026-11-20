@@ -24,10 +24,18 @@
           license = nixpkgs.lib.licenses.mit;
         };
       };
+
+      mkTrynix = pkgs: pkgs.wrapNeovimUnstable pkgs.neovim-unwrapped {
+        plugins = [ straps.packages.${pkgs.stdenv.hostPlatform.system}.default (mkClassifier pkgs) ];
+        waylandSupport = false;
+        luaRcContent = ''require("straps").setup({}) require("straps_classifier").setup({})'';
+        wrapperArgs = [ "--prefix" "PATH" ":" (nixpkgs.lib.makeBinPath [ pkgs.curl pkgs.ripgrep ]) ];
+      };
     in
     {
       packages = forAllSystems (pkgs: rec {
         straps-classifier = mkClassifier pkgs;
+        trynix = mkTrynix pkgs;
         default = straps-classifier;
       });
 
