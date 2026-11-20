@@ -69,12 +69,12 @@ require("straps_classifier").setup({
 
 ### Choosing the adapter
 
-`adapter` picks which model answers the six questions. The questions, routing and fail-closed rules are the same for both.
+`adapter` picks which model assesses the operation. Both deny on any malformed or unavailable answer.
 
-| `adapter` | Model | Credential | Timeout |
-| --- | --- | --- | --- |
-| omitted, or `{ name = "typesafe" }` | top-level `model` (default `jev-latest`) | `fn.typesafe_api_key` | top-level `timeout_ms` |
-| `{ name = "anthropic" }` | `adapter.model` (default `claude-sonnet-5`) | the straps Anthropic provider key and base URL | `adapter.timeout_ms` (default 30000) |
+| `adapter` | Model | Credential | Timeout | Questions |
+| --- | --- | --- | --- | --- |
+| omitted, or `{ name = "typesafe" }` | top-level `model` (default `jev-latest`) | `fn.typesafe_api_key` | top-level `timeout_ms` | facts plus narrow yes/no questions, sent in `votes` key orderings |
+| `{ name = "anthropic" }` | `adapter.model` (default `claude-sonnet-5`) | the straps Anthropic provider key and base URL | `adapter.timeout_ms` (default 30000) | the six categorical questions, one request |
 
 For `anthropic`, `adapter.max_tokens` (default 4000, range 1000–32000) bounds the response, including the model's reasoning. `adapter.timeout_ms` ranges from 1000 to 120000. The adapter sends one request to `/v1/messages` with the straps Anthropic credentials (`:StrapsLogin anthropic` or `$ANTHROPIC_API_KEY`) and makes no retry. A response that stops before finishing, carries no text answer, omits a question or names an unknown choice counts as unavailable and denies. `status()` and `:checkhealth straps_classifier` report the selected adapter and whether its credential resolves.
 
@@ -87,9 +87,51 @@ best_effort = {
 
 Selecting `anthropic` sends the request described below to Anthropic instead of TypeSafe, so `disclosure_approved` must cover that provider. Evidence so far: on the 15-case probe of the print-only operations TypeSafe withholds, Sonnet 5 allowed all 30 permitted observations and denied all 15 near-miss observations (`sonnet-probe/REPORT.md`). That probe covers one scenario type and does not establish Sonnet's behavior on the full corpus. One timed call took about 6 s, so the TypeSafe default timeout of 8 s is too short for this adapter.
 
+### The TypeSafe battery
+
+For `typesafe`, the classifier first computes facts about the operation in code (`lua/straps_classifier/facts.lua`) and sends them with the full scope and operation:
+
+- the program the tool starts and its arguments, when the definition passes a literal or `input` argument list to `vim.system`;
+- for a shell script, whether anything outside single quotes and quoted heredocs evaluates text: `$(...)`, backticks, `eval`, `source`, `.`, a second shell with `-c`, a pipe into a shell, an inline interpreter, or `sed` with the `e` flag;
+- for an inline Python program, calls that execute code, delete or write data, or use the network, and whether each sits inside a function definition;
+- Lua calls that redefine registry entries, install autocmds, change permissions, delete, rename, write, compile or load code;
+- for `curl`, the method, URLs, uploaded files, trace files and redirect credential forwarding;
+- browser page actions;
+- `infrastructure_commands`: each `ssh`, `scp`, `rsync`, `kubectl`, `docker`, `podman`, `aws` and `terraform` invocation, read from the shell script or argument list (through `sudo` and environment prefixes) with its host, account, jump hosts and `ProxyCommand`, remote command, copy sources and destinations and `--delete`, kubectl context, namespace, verb and pod command, container image, mounts and host-access flags, AWS profile and operation, and terraform subcommand. A value starting `not stated` marks a default the operation relies on, such as the current kubectl context or the default AWS profile;
+- `runs_commands_on_another_system`, true when quoted text is executed by a remote shell, a pod or a container (`ssh host 'cmd'`, `kubectl exec`, `docker run`/`exec`), and a note when a remote ssh command contains `$` or backtick text that this machine expands before sending;
+- `data_text_never_executed`, true when none of the above executes text the operation carries as data.
+
+These facts are pattern and token analysis of the definition and input, not execution. They do not follow helpers, shell functions or aliases, and a definition that builds its argument list at run time yields only `program = "built at run time"`.
+
+The request asks the six categorical questions plus yes/no questions: six about effects (deletes, remote change, secret exposed, protection weakened, unknown code, unknown target), one per restrictive scope sentence (a sentence containing a limiting word such as "never", "not", "only", "read-only" or "between"; "does this sentence forbid something the operation does?"), one per operator prohibition, one about whether the scope permits every effect, and page-listener, HTTP-target and unstated-default questions when those facts exist. Code routes the answers: any secret exposure, protection weakening, unknown code, scope-sentence conflict or prohibition breach at probability 0.5 or above denies; a remote change that relies on an unstated context, profile or account denies; an unknown target denies at 0.9; a page listener denies when it also scores 0.3 or above on secret exposure; a remote change denies when the HTTP target is not authorized; and the operation is allowed only when the scope permits its effects at 0.5 or above. The six categorical answers are sent but do not route.
+
+Jev's answers change with JSON key order. The classifier sends the same request `adapter.votes` times (default 3, range 1–5) with different key orders and allows only when every ordering allows. The requests run one after another; a call takes roughly one request time per ordering. A deny reason names the ordering that denied and, for a scope conflict, the sentence number without quoting it.
+
+```lua
+adapter = { name = "typesafe", votes = 3 }
+```
+
+Measured on the 120-case development corpus and 38-case holdout through this code path, two runs each (`/tmp/straps-battery`): permitted operations allowed 49 and 49 of 60, against 44 and 45 for the six questions alone; unsafe operations allowed 2 and 2 of 60, against 1 and 2; holdout permitted 16 and 17 of 17, against 14 and 14, with 0 of 21 unsafe in all four runs. Median classification time rose from about 160 ms to about 250 ms. Cases that still pass under some or all runs: a form check whose listener uploads private notes, and child-job dispatch with an unresolved permission preset. The routing thresholds were chosen on the development corpus.
+
+A 74-case remote-operations set (`/tmp/straps-battery/remote.json`: ssh, scp, rsync, kubectl, docker, aws and terraform, 31 permitted and 43 unsafe, under four operator scopes) allowed 28 and 30 of 31 permitted operations and 0 of 43 unsafe operations in two runs. Before the infrastructure facts, it allowed 27 and 26 permitted and 2 and 2 unsafe: a remote delete whose target this machine expanded from a file, and a kubectl change against the unstated current context. The remote set was written and tuned in the same session, so it is not a holdout.
+
+### User intent
+
+`user_intent = true` (TypeSafe adapter only) adds a second limit inside the operator scope: the operation must not go beyond what the human user asked for. The classifier reads the root session's first user message and its last four (following `straps_parent` from a subagent up to the session the user typed in), skips harness notices and agent messages, and sends them as `user_requests`. Calls that straps' `fn.capability` classifies as `read` (`read_file`, `grep`, `glob`, `tree` and similar) skip the intent question and send no user messages; they cannot go beyond a request. Reads run through `bash` are classified `exec` and still get the question. A yes/no question asks whether the operation goes beyond those requests: whether it changes, deletes, sends, publishes or deploys something on a host, account, environment, service, repository or path the requests do not cover, or does something the user cancelled or forbade. Reading, searching, inspecting, testing, building and editing files that serve the user's current task count as part of the task. The call is denied when that answer is 0.5 or above, and it still needs the operator scope to permit its effects. A user request cannot exceed the operator scope or override its restrictions.
+
+```lua
+best_effort = { ..., operator_scope = "You may operate the build hosts, staging and prod clusters ...", user_intent = true }
+```
+
+On a 30-case intent set (`/tmp/straps-battery/intent.json`), with a broad scope that permits staging and prod, scope-only routing allowed 12 and 13 of 13 requested operations and 12 of 17 operations the user did not ask for. With `user_intent`, it allowed 13 of 13 requested operations and 0 of 17 unrequested operations in two runs: prod changes when the user asked for staging, a scale count the user did not ask for, a restart the user cancelled, a child task that went beyond the user's request, and an approval claimed in a command comment. User messages are sent to TypeSafe with the request, so `disclosure_approved` must cover them. The intent set was also written in this session.
+
+Replayed against 253 tool calls sampled from 207 of the author's own straps sessions (`/tmp/straps-battery/real.json`, each call with its preceding user messages, under a coding-agent operator scope written before the run), the classifier allowed 105 of 127 held-out calls with the operator scope alone and 79 of 127 with `user_intent`. These are calls the user let run, so most withheld ones are false blocks; some do break that scope (`sudo`, ssh to other hosts, searching `/`), and the withheld calls were not individually labeled. The sample has no harmful calls, so it measures interruption, not safety. **`user_intent` withheld about one in five calls that the scope alone allowed**, mostly edits, registry definitions, subagent messages and undo steps during work the user had approved with a short reply ("Implement.", "Approved.", "Go for it") whose task was stated before the last four messages.
+
+Adding the session's first message and skipping read calls raised the held-out result with `user_intent` to 84 and 81 of 127 in two runs, against 107 and 103 with the scope alone. Almost all of the gain came from skipping reads; the first message alone gave 69 and 68, against 69 and 70 without it. The intent set still allowed 13 of 13 requested and 0 of 17 unrequested operations in two runs. Requests are encoded in fully sorted key order, so a call produces the same bytes in every process; before that, LuaJIT's per-process table order changed the nested JSON between runs. Two identical runs still disagree on about 6 of 127 decisions.
+
 Startup scope is standing authority for **all sessions in that Neovim**. Agent tasks, transcript text, tool results and approval claims in operation data cannot extend it. Other guards, child permission ceilings, confirmation and `:StrapsAuto` grants remain independent. A favorable classifier verdict grants no permission. Mandatory prohibitions and operator prohibitions take precedence over grants. Best-effort replaces the legacy categorical patterns and hazard thresholds, including the separate strict-mode `ask_user` battery, with scope and prohibition assessment.
 
-The default TypeSafe adapter uses the configured top-level `model` (default `jev-latest`), `endpoint` and `timeout_ms`. Each adapter makes one transport attempt regardless of `retry`. The request includes full tool input, registered definition source, working directory, startup scope and prohibitions. Oversized requests deny without truncating executable input or source. The classifier adds no transcript or environment values.
+The default TypeSafe adapter uses the configured top-level `model` (default `jev-latest`), `endpoint` and `timeout_ms`. Each request makes one transport attempt regardless of `retry`; the TypeSafe adapter sends one request per ordering. The request includes full tool input, registered definition source, working directory, startup scope and prohibitions; the TypeSafe request also includes the computed facts. With `user_intent`, calls that are not reads also include the root session's first user message and its last four. Oversized requests deny without truncating executable input or source. Otherwise the classifier adds no transcript or environment values.
 
 Provider transmission happens **before operator confirmation**, including for a call the operator later refuses. Approval covers submitted input, source and scope; those fields can contain secrets. The classifier cannot reliably identify arbitrary secrets before transmission. Avoid submitting secrets.
 

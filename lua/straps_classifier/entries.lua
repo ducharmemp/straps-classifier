@@ -135,7 +135,7 @@ end
       .. " nil, err. Requires ctx (it awaits); configured retries in strict mode,"
       .. " one attempt in best-effort mode.",
     source = [==[
-return function(payload, ctx)
+return function(payload, ctx, encoded)
   if not (ctx and ctx.await) then
     return nil, "no ctx to await on"
   end
@@ -151,7 +151,8 @@ return function(payload, ctx)
     return nil, "no API key"
   end
 
-  local ok_body, body = pcall(vim.json.encode, payload)
+  local ok_body, body = true, encoded
+  if type(body) ~= "string" then ok_body, body = pcall(vim.json.encode, payload) end
   if not ok_body then
     return nil, "could not encode the request"
   end

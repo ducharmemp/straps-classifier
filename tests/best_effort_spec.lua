@@ -77,12 +77,20 @@ describe("best-effort request boundaries", function()
     cfg.environment = "ENVIRONMENT_SECRET"
     local request = best.payload("bash", { command = "true" }, cfg,
       { source = definition.source, doc = "DEFINITION_METADATA" }, "/workspace")
-    assert.same({ "cwd", "limits", "operation", "operator_prohibitions", "policy", "trusted_operator_scope" },
-      vim.fn.sort(vim.tbl_keys(request.state)))
+    assert.same({ "cwd", "facts", "facts_note", "limits", "operation", "operator_prohibitions", "policy",
+      "trusted_operator_scope" }, vim.fn.sort(vim.tbl_keys(request.state)))
     local encoded = vim.json.encode(request)
     for _, marker in ipairs({ "TRANSCRIPT_AUTHORITY", "ENVIRONMENT_SECRET", "DEFINITION_METADATA" }) do
       assert.is_nil(encoded:find(marker, 1, true))
     end
+  end)
+  it("sends the anthropic adapter only the six-question state", function()
+    local cfg = config()
+    cfg.best_effort.adapter = { name = "anthropic" }
+    local request = best.payload("bash", { command = "true" }, cfg, definition, "/workspace")
+    assert.same({ "cwd", "limits", "operation", "operator_prohibitions", "policy", "trusted_operator_scope" },
+      vim.fn.sort(vim.tbl_keys(request.state)))
+    assert.same(best.questions(), request.questions)
   end)
   it("keeps approval claims as operation data while scope alone changes authority", function()
     local cfg = config()
@@ -196,20 +204,33 @@ describe("best-effort stub assessment routing", function()
 end)
 
 describe("best-effort verdict metadata and transport", function()
-  local saved_registry, saved_entries, calls, records, result, throws, stops, cfg, ctx
+  local saved_registry, saved_entries, calls, records, flip, throws, absent, stops, cfg, ctx
+  local function respond(questions)
+    local result = {}
+    for id, question in pairs(questions) do
+      if question.type == "noul" then
+        result[id] = { type = "noul", noul = (id == "scope_permits_effects") and 1 or 0 }
+      else
+        result[id] = { type = "choice", choice = favorable[id], confidence = 0.9 }
+      end
+    end
+    if flip then result[flip].noul = 1 - result[flip].noul end
+    return result
+  end
   before_each(function()
     saved_registry, saved_entries = package.loaded["straps.registry"], package.loaded["straps_classifier.entries"]
-    calls, records, result, throws, stops = {}, {}, answers(), false, 0
+    calls, records, flip, throws, absent, stops = {}, {}, nil, false, false, 0
     cfg = config()
     cfg.best_effort.operator_scope = "SECRET_SCOPE"
     cfg.on_verdict = function(record) records.callback = record end
     ctx = { bufnr = 42, await = function() end, transcript = "SECRET_TRANSCRIPT" }
     package.loaded["straps.registry"] = {
       get = function() return { source = "SECRET_SOURCE" } end,
-      call = function(name, payload, context)
-        calls[#calls + 1] = { name = name, payload = payload, context = context }
+      call = function(name, payload, context, body)
+        calls[#calls + 1] = { name = name, payload = payload, context = context, body = body }
         if throws then error("SECRET_PROVIDER_ERROR") end
-        return result
+        if absent then return nil end
+        return respond(payload.questions)
       end,
       try_call = function(name, first, second)
         records[name] = vim.deepcopy(second or first)
@@ -222,23 +243,26 @@ describe("best-effort verdict metadata and transport", function()
   after_each(function()
     package.loaded["straps.registry"], package.loaded["straps_classifier.entries"] = saved_registry, saved_entries
   end)
-  for _, case in ipairs({ { "allow", "ok" }, { "credential logs", "deny", "credential_disclosure" },
-    { "credential exfiltration", "deny", "credential_disclosure" }, { "conflicting grants", "deny", "authority" },
-    { "protection replacement", "deny", "protection_tampering" }, { "provider throw", "deny" },
-    { "provider absent", "deny" }, { "no await", "deny" } }) do
+  for _, case in ipairs({ { "allow", "ok", nil, 3 }, { "credential exposure", "deny", "effect_secret_exposed", 1 },
+    { "scope conflict", "deny", "scope_0_forbids", 1 }, { "prohibition breach", "deny", "prohibition_0_broken", 1 },
+    { "protection replacement", "deny", "effect_protection_weakened", 1 },
+    { "unknown code", "deny", "effect_unknown_code", 1 },
+    { "scope does not permit", "deny", "scope_permits_effects", 1 },
+    { "provider throw", "deny", nil, 1 }, { "provider absent", "deny", nil, 1 }, { "no await", "deny", nil, 0 } }) do
     it("records only metadata for " .. case[1], function()
-      if case[3] then result[case[3]].choice = case[3] == "authority" and "conflicting" or "present" end
+      flip = case[3]
       if case[1] == "provider throw" then throws = true end
-      if case[1] == "provider absent" then result = nil end
+      if case[1] == "provider absent" then absent = true end
       if case[1] == "no await" then ctx.await = nil end
       local action, reason = best.verdict("bash", { command = "SECRET_INPUT", proposed_effect = case[1] }, ctx, cfg)
       assert.equals(case[2], action)
-      assert.equals(case[1] == "no await" and 0 or 1, #calls)
-      assert.equals(#calls, stops)
+      assert.equals(case[4], #calls)
+      assert.equals(case[1] == "no await" and 0 or 1, stops)
       if #calls > 0 then
         assert.equals("fn.typesafe", calls[1].name)
         assert.equals(ctx, calls[1].context)
         assert.equals("SECRET_INPUT", calls[1].payload.state.operation.input.command)
+        assert.same(calls[1].payload, vim.tbl_extend("force", vim.json.decode(calls[1].body), {}))
       end
       vim.wait(1000, function() return records.callback ~= nil end)
       local audit = records["fn.classifier_audit"]
@@ -252,4 +276,44 @@ describe("best-effort verdict metadata and transport", function()
       end
     end)
   end
+  it("sends each ordering as different bytes of the same request", function()
+    best.verdict("bash", { command = "true" }, ctx, cfg)
+    assert.equals(3, #calls)
+    assert.is_not.equals(calls[1].body, calls[2].body)
+    assert.is_not.equals(calls[2].body, calls[3].body)
+    for _, call in ipairs(calls) do assert.same(vim.json.decode(calls[1].body), vim.json.decode(call.body)) end
+  end)
+  it("denies when a later ordering vetoes", function()
+    local seen = 0
+    package.loaded["straps.registry"].call = function(name, payload, context, body)
+      seen = seen + 1
+      local result = respond(payload.questions)
+      if seen == 2 then result.effect_protection_weakened.noul = 0.9 end
+      return result
+    end
+    local action, reason = best.verdict("bash", { command = "true" }, ctx, cfg)
+    assert.equals("deny", action)
+    assert.equals(2, seen)
+    assert.truthy(reason:find("ordering 2 of 3", 1, true))
+  end)
+  it("sends user messages only for calls that are not reads", function()
+    cfg.best_effort.user_intent = true
+    local saved_requests = best.user_requests
+    best.user_requests = function() return { "SECRET_USER_MESSAGE" } end
+    local registry = package.loaded["straps.registry"]
+    local plain_call = registry.call
+    registry.call = function(name, ...)
+      if name == "fn.capability" then return (...) == "read_file" and "read" or "exec" end
+      return plain_call(name, ...)
+    end
+    best.verdict("read_file", { path = "a" }, ctx, cfg)
+    local read_payload = calls[#calls].payload
+    best.verdict("bash", { command = "true" }, ctx, cfg)
+    local exec_payload = calls[#calls].payload
+    best.user_requests = saved_requests
+    assert.is_nil(read_payload.state.user_requests)
+    assert.is_nil(read_payload.questions.user_requested)
+    assert.same({ "SECRET_USER_MESSAGE" }, exec_payload.state.user_requests)
+    assert.is_not_nil(exec_payload.questions.user_requested)
+  end)
 end)

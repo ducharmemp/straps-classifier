@@ -30,6 +30,12 @@ describe("adapter option validation", function()
     { "small budget", { name = "anthropic", max_tokens = 999 }, false },
     { "fractional budget", { name = "anthropic", max_tokens = 4000.5 }, false },
     { "metatable", setmetatable({ name = "anthropic" }, {}), false },
+    { "typesafe votes", { name = "typesafe", votes = 1 }, true },
+    { "five typesafe votes", { name = "typesafe", votes = 5 }, true },
+    { "zero votes", { name = "typesafe", votes = 0 }, false },
+    { "six votes", { name = "typesafe", votes = 6 }, false },
+    { "fractional votes", { name = "typesafe", votes = 2.5 }, false },
+    { "votes on anthropic", { name = "anthropic", votes = 3 }, false },
   }) do
     it((case[3] and "accepts " or "rejects ") .. case[1], function()
       assert.equals(case[3], (pcall(best.validate, options({ adapter = case[2] }))))
@@ -38,8 +44,8 @@ describe("adapter option validation", function()
 end)
 
 describe("adapter resolution", function()
-  it("defaults to typesafe with the configured model", function()
-    assert.same({ name = "typesafe", model = "jev-9" }, adapter.resolve(options(), { model = "jev-9" }))
+  it("defaults to typesafe with the configured model and three orderings", function()
+    assert.same({ name = "typesafe", model = "jev-9", votes = 3 }, adapter.resolve(options(), { model = "jev-9" }))
   end)
   it("defaults anthropic to sonnet 5 with a reasoning budget and its own timeout", function()
     assert.same({ name = "anthropic", model = "claude-sonnet-5", max_tokens = 4000, timeout_ms = 30000 },
@@ -114,14 +120,26 @@ end)
 
 describe("verdict transport selection", function()
   local saved_registry, saved_entries, calls
+  local function favorable_answers(questions)
+    local result = {}
+    for id, question in pairs(questions) do
+      if question.type == "noul" then
+        result[id] = { type = "noul", noul = (id == "scope_permits_effects") and 1 or 0 }
+      else
+        result[id] = { type = "choice", choice = favorable[id], confidence = 1 }
+      end
+    end
+    return result
+  end
   before_each(function()
     saved_registry, saved_entries = package.loaded["straps.registry"], package.loaded["straps_classifier.entries"]
     calls = {}
-    local result = {}
-    for id, choice in pairs(favorable) do result[id] = { type = "choice", choice = choice, confidence = 1 } end
     package.loaded["straps.registry"] = {
       get = function() return { source = "return function() end" } end,
-      call = function(name, payload, ctx, spec) calls[#calls + 1] = { name = name, spec = spec, model = payload.model }; return result end,
+      call = function(name, payload, ctx, extra)
+        calls[#calls + 1] = { name = name, spec = extra, model = payload.model }
+        return favorable_answers(payload.questions)
+      end,
       try_call = function() end,
     }
     package.loaded["straps_classifier.entries"] = { start_progress = function() return function() end end }
@@ -129,14 +147,19 @@ describe("verdict transport selection", function()
   after_each(function()
     package.loaded["straps.registry"], package.loaded["straps_classifier.entries"] = saved_registry, saved_entries
   end)
-  it("uses fn.typesafe by default", function()
+  it("uses fn.typesafe by default, once per ordering", function()
     assert.equals("ok", (best.verdict("bash", {}, { await = function() end }, { model = "jev-latest", best_effort = options() })))
-    assert.equals("fn.typesafe", calls[1].name)
-    assert.equals("jev-latest", calls[1].model)
+    assert.equals(3, #calls)
+    for _, call in ipairs(calls) do
+      assert.equals("fn.typesafe", call.name)
+      assert.equals("jev-latest", call.model)
+      assert.is_string(call.spec)
+    end
   end)
   it("uses fn.classifier_anthropic when selected", function()
     local cfg = { model = "jev-latest", best_effort = options({ adapter = { name = "anthropic" } }) }
     assert.equals("ok", (best.verdict("bash", {}, { await = function() end }, cfg)))
+    assert.equals(1, #calls)
     assert.equals("fn.classifier_anthropic", calls[1].name)
     assert.equals("claude-sonnet-5", calls[1].model)
     assert.same({ name = "anthropic", model = "claude-sonnet-5", max_tokens = 4000, timeout_ms = 30000 }, calls[1].spec)

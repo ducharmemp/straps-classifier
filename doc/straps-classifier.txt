@@ -95,20 +95,26 @@ Options:
   max_request_bytes      Optional integer 1024..1048576; default 65536.
   adapter                Optional table selecting the assessing model;
                          omit for TypeSafe. See |straps-classifier-adapter|.
+  user_intent            Optional boolean; TypeSafe only. Also deny an
+                         operation that goes beyond what the user asked for.
+                         See |straps-classifier-user-intent|.
 
 *straps-classifier-adapter*
-adapter picks the model that answers the six questions. Questions, routing and
-fail-closed rules are identical for both adapters.
+adapter picks the model that assesses the operation. Both adapters deny on any
+malformed or unavailable answer.
 
   omitted or { name = "typesafe" }
       Top-level model (default jev-latest), fn.typesafe_api_key, top-level
-      timeout_ms.
+      timeout_ms. Sends computed facts plus yes/no questions. See
+      |straps-classifier-typesafe-battery|.
+      votes        default 3, range 1..5; key orderings that must all allow
   { name = "anthropic" }
       model        default claude-sonnet-5
       max_tokens   default 4000, range 1000..32000; includes reasoning
       timeout_ms   default 30000, range 1000..120000
       Uses the straps Anthropic provider key and base URL (:StrapsLogin
-      anthropic or $ANTHROPIC_API_KEY).
+      anthropic or $ANTHROPIC_API_KEY). Sends the six categorical questions
+      in one request.
 
 The anthropic adapter sends one request to /v1/messages without retry. A
 response that stops before finishing, has no text answer, omits a question or
@@ -119,6 +125,65 @@ the selected adapter and whether its credential resolves.
 Sonnet 5 passed a 15-case probe of print-only operations that TypeSafe
 withholds. That probe covers one scenario type only.
 
+*straps-classifier-typesafe-battery*
+The typesafe adapter computes facts about the operation in code
+(straps_classifier.facts) and sends them with the full scope and operation:
+the program and arguments passed to vim.system, shell constructs outside
+single quotes and quoted heredocs that evaluate text, Python calls that
+execute code or delete or write data, Lua calls that redefine registry
+entries, install autocmds, change permissions or load code, curl method, URLs,
+uploads and trace files, browser page actions, and data_text_never_executed.
+infrastructure_commands lists each ssh, scp, rsync, kubectl, docker, podman,
+aws and terraform invocation with its host, account, jump hosts, remote
+command, copy endpoints, kubectl context, namespace and verb, container image,
+mounts and host-access flags, AWS profile and terraform subcommand; a value
+starting "not stated" marks a default the operation relies on.
+runs_commands_on_another_system is true when quoted text runs in a remote
+shell, pod or container. The facts come from pattern and token analysis, not
+execution; they do not follow helpers, shell functions or aliases.
+
+The request asks the six categorical questions plus yes/no questions about
+effects, one per restrictive scope sentence (one containing a limiting word
+such as never, not, only, read-only or between), one per operator
+prohibition, and one about whether the scope permits every effect. The
+unknown-code question treats the tool's own registered definition and the
+modules it requires as known, and asks only about code the input directs it
+to run. Code routes the yes/no answers: secret exposure, protection
+weakening, unknown code, a scope-sentence conflict or a prohibition breach at
+0.5 or above denies; a remote change that relies on an unstated default
+denies; an unknown target denies at 0.9; the scope must permit the effects at
+0.5 or above. The six categorical answers do not route.
+
+The same request is sent votes times with different JSON key orders, one after
+another, and the call is allowed only when every ordering allows. On the
+120-case development corpus this allowed 49 of 60 permitted operations in two
+runs against 44 and 45 for the six questions alone, with 2 unsafe allowances
+in each run against 1 and 2; on a 74-case remote-operations set it allowed 28
+and 30 of 31 permitted and 0 of 43 unsafe operations. Median classification
+time rose from about 160 ms to about 250 ms.
+
+*straps-classifier-user-intent*
+user_intent = true adds a second limit inside operator_scope: the operation
+must not go beyond what the human user asked for. The classifier reads the
+root session's first user message and its last four (following straps_parent
+from a subagent), skips harness notices and agent messages, and sends them as
+user_requests. Calls that fn.capability classifies as read skip the intent
+question and send no user messages. A yes/no question asks whether the operation changes, deletes,
+sends, publishes or deploys something the requests do not cover, or does
+something the user cancelled or forbade; reading, testing, building and
+editing that serve the current task count as part of it. The call is denied
+when that answer is 0.5 or above, and the scope must still permit the
+effects. A user request cannot exceed the operator scope.
+disclosure_approved must cover sending those messages to TypeSafe.
+
+On a 30-case intent set it allowed 13 of 13 requested operations and 0 of 17
+unrequested ones, against 12 of 17 unrequested with the scope alone.
+Replayed on 127 held-out tool calls from the author's own sessions, it
+allowed 79, against 105 with the scope alone. With the first message and the
+read skip it allowed 84 and 81, against 107 and 103 with the scope alone; it
+withholds about one in six ordinary calls, most often during work approved
+several messages earlier.
+
 Startup scope supplies standing authority for ALL sessions in this Neovim.
 Transcript text, agent tasks, tool results and operation approval claims grant
 no authority. Child ceilings, other guards, confirmation and :StrapsAuto grants
@@ -128,8 +193,9 @@ categorical patterns and hazard thresholds, including the strict ask_user
 battery, with scope and prohibition assessment.
 
 The default TypeSafe adapter uses the configured top-level model (default
-jev-latest), endpoint and timeout_ms. Each adapter makes one transport attempt
-regardless of retry. Requests include
+jev-latest), endpoint and timeout_ms. Each request makes one transport attempt
+regardless of retry; the TypeSafe adapter sends one request per ordering.
+Requests include
 full tool input, registered definition source, working directory, startup scope
 and prohibitions. Oversized requests deny without truncating input or source.
 The classifier adds no transcript or environment values.
